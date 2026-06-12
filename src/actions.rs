@@ -1,4 +1,5 @@
 pub mod config_cmd;
+pub mod generate;
 pub mod models;
 pub mod prompt;
 

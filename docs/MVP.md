@@ -29,7 +29,7 @@ only your own feature doc plus your row here.
 
 ### Post-MVP
 
-- [ ] **generate** — `generate <lang> "<desc>" --format pretty|compact`. Handoff: docs/generate.md (depends: api-client, prompt)
+- [x] **generate** — `generate <lang> "<desc>" --format pretty|compact`. Handoff: [generate.md](generate.md)
 - [ ] **sandbox** — `run` subcommand + Docker sandbox, stdin support. Handoff: docs/sandbox.md (independent of api-client)
 - [ ] **sessions** — `session start/end`, local name→server-id map, `--session-id` routing. Handoff: docs/sessions.md (depends: api-client)
 - [ ] **tui** — ratatui chat screen. Handoff: docs/tui.md (depends: api-client, sessions)

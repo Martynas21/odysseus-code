@@ -21,7 +21,21 @@ async fn main() -> Result<()> {
         Command::Prompt { text } => {
             actions::prompt::handle(&text, session_id, project_path, current_file).await
         }
-        Command::Generate { .. } => anyhow::bail!("generate: not implemented yet"),
+        Command::Generate {
+            lang,
+            description,
+            format,
+        } => {
+            actions::generate::handle(
+                &lang,
+                &description,
+                format,
+                session_id,
+                project_path,
+                current_file,
+            )
+            .await
+        }
         Command::Run { .. } => anyhow::bail!("run: not implemented yet"),
         Command::Session { .. } => anyhow::bail!("session: not implemented yet"),
         Command::Models => actions::models::handle().await,
