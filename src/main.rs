@@ -3,6 +3,7 @@ mod cli;
 mod client;
 mod config;
 mod context;
+mod sandbox;
 mod session;
 
 use anyhow::Result;
@@ -36,7 +37,10 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Run { .. } => anyhow::bail!("run: not implemented yet"),
+        Command::Run { code, lang } => {
+            let exit = actions::run::handle(code.as_deref(), lang.as_deref())?;
+            std::process::exit(exit);
+        }
         Command::Session { .. } => anyhow::bail!("session: not implemented yet"),
         Command::Models => actions::models::handle().await,
         Command::Config { action } => actions::config_cmd::handle(action),
