@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
             let exit = actions::run::handle(code.as_deref(), lang.as_deref())?;
             std::process::exit(exit);
         }
-        Command::Session { .. } => anyhow::bail!("session: not implemented yet"),
+        Command::Session { action } => actions::session::handle(action).await,
         Command::Models => actions::models::handle().await,
         Command::Config { action } => actions::config_cmd::handle(action),
         Command::Tui => anyhow::bail!("tui: not implemented yet"),

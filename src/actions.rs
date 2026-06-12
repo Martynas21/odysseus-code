@@ -3,6 +3,7 @@ pub mod generate;
 pub mod models;
 pub mod prompt;
 pub mod run;
+pub mod session;
 
 use anyhow::{Context, Result, bail};
 

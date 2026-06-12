@@ -31,7 +31,7 @@ only your own feature doc plus your row here.
 
 - [x] **generate** — `generate <lang> "<desc>" --format pretty|compact`. Handoff: [generate.md](generate.md)
 - [x] **sandbox** — `run` subcommand + Docker sandbox, stdin support. Handoff: [sandbox.md](sandbox.md)
-- [ ] **sessions** — `session start/end`, local name→server-id map, `--session-id` routing. Handoff: docs/sessions.md (depends: api-client)
+- [x] **sessions** — `session start/end`, local name→server-id map, `--session-id` routing. Handoff: [sessions.md](sessions.md)
 - [ ] **tui** — ratatui chat screen. Handoff: docs/tui.md (depends: api-client, sessions)
 - [ ] **tests-ci** — remaining unit tests, `tests/cli.rs`, GitHub Actions (fmt, clippy, build, test). Handoff: docs/tests-ci.md
 - [ ] **docs** — README from the product spec + CHANGELOG. Handoff: docs/docs.md
