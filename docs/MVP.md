@@ -25,7 +25,7 @@ only your own feature doc plus your row here.
 - [x] **skeleton** — Cargo project, clap CLI surface, this roadmap. Handoff: [skeleton.md](skeleton.md)
 - [x] **config** — `config.rs`, `~/.config/odysseus-code/config.yaml`, `config set/get/path`. Handoff: [config.md](config.md)
 - [x] **api-client** — `client.rs` + `context.rs`: chat, session create/delete, models, history against the Odysseus REST API; mockito tests. Handoff: [api-client.md](api-client.md)
-- [ ] **prompt** — `prompt` subcommand incl. lazy default server session + `models` helper; live verification against localhost:7000. Handoff: docs/prompt.md
+- [x] **prompt** — `prompt` subcommand incl. lazy default server session + `models` helper. Handoff: [prompt.md](prompt.md). ⚠ live verification against localhost:7000 pending an `ody_` token from the user
 
 ### Post-MVP
 
