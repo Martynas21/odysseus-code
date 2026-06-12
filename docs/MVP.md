@@ -23,7 +23,7 @@ only your own feature doc plus your row here.
 ### MVP (priority: working `prompt` against the live backend)
 
 - [x] **skeleton** — Cargo project, clap CLI surface, this roadmap. Handoff: [skeleton.md](skeleton.md)
-- [ ] **config** — `config.rs`, `~/.config/odysseus-code/config.yaml`, `config set/get/path`. Handoff: docs/config.md
+- [x] **config** — `config.rs`, `~/.config/odysseus-code/config.yaml`, `config set/get/path`. Handoff: [config.md](config.md)
 - [ ] **api-client** — `client.rs` + `context.rs`: chat, session create/delete, models, history against the Odysseus REST API; mockito tests. Handoff: docs/api-client.md
 - [ ] **prompt** — `prompt` subcommand incl. lazy default server session + `models` helper; live verification against localhost:7000. Handoff: docs/prompt.md
 

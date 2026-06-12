@@ -1,4 +1,6 @@
+mod actions;
 mod cli;
+mod config;
 
 use anyhow::Result;
 use clap::Parser;
@@ -15,7 +17,7 @@ async fn main() -> Result<()> {
         Command::Run { .. } => anyhow::bail!("run: not implemented yet"),
         Command::Session { .. } => anyhow::bail!("session: not implemented yet"),
         Command::Models => anyhow::bail!("models: not implemented yet"),
-        Command::Config { .. } => anyhow::bail!("config: not implemented yet"),
+        Command::Config { action } => actions::config_cmd::handle(action),
         Command::Tui => anyhow::bail!("tui: not implemented yet"),
     }
 }
