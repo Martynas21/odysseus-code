@@ -31,6 +31,7 @@ pub enum ClientError {
 }
 
 /// Client for the Odysseus REST API (`/api/chat`, `/api/session`, …).
+#[derive(Clone)]
 pub struct OdysseusClient {
     http: reqwest::Client,
     base: String,
