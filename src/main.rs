@@ -1,6 +1,8 @@
 mod actions;
 mod cli;
+mod client;
 mod config;
+mod context;
 
 use anyhow::Result;
 use clap::Parser;
