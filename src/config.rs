@@ -79,10 +79,6 @@ impl Config {
             .with_context(|| format!("parsing config file {}", path.display()))
     }
 
-    pub fn save(&self) -> Result<()> {
-        self.save_to(&config_path()?)
-    }
-
     pub fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)

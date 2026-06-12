@@ -33,7 +33,7 @@ only your own feature doc plus your row here.
 - [x] **sandbox** — `run` subcommand + Docker sandbox, stdin support. Handoff: [sandbox.md](sandbox.md)
 - [x] **sessions** — `session start/end`, local name→server-id map, `--session-id` routing. Handoff: [sessions.md](sessions.md)
 - [x] **tui** — ratatui chat screen. Handoff: [tui.md](tui.md). ⚠ live verification pending an `ody_` token
-- [ ] **tests-ci** — remaining unit tests, `tests/cli.rs`, GitHub Actions (fmt, clippy, build, test). Handoff: docs/tests-ci.md
+- [x] **tests-ci** — `tests/cli.rs`, GitHub Actions (fmt, clippy, build, test), clippy cleanup. Handoff: [tests-ci.md](tests-ci.md)
 - [ ] **docs** — README from the product spec + CHANGELOG. Handoff: docs/docs.md
 
 ## Plan notes (until api-client.md exists)
