@@ -34,7 +34,7 @@ only your own feature doc plus your row here.
 - [x] **sessions** — `session start/end`, local name→server-id map, `--session-id` routing. Handoff: [sessions.md](sessions.md)
 - [x] **tui** — ratatui chat screen. Handoff: [tui.md](tui.md). ⚠ live verification pending an `ody_` token
 - [x] **tests-ci** — `tests/cli.rs`, GitHub Actions (fmt, clippy, build, test), clippy cleanup. Handoff: [tests-ci.md](tests-ci.md)
-- [ ] **docs** — README from the product spec + CHANGELOG. Handoff: docs/docs.md
+- [x] **docs** — README from the product spec + CHANGELOG. Handoff: [docs.md](docs.md)
 
 ## Plan notes (until api-client.md exists)
 
