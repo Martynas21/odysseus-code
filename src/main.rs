@@ -44,6 +44,6 @@ async fn main() -> Result<()> {
         Command::Session { action } => actions::session::handle(action).await,
         Command::Models => actions::models::handle().await,
         Command::Config { action } => actions::config_cmd::handle(action),
-        Command::Tui => anyhow::bail!("tui: not implemented yet"),
+        Command::Tui => actions::tui::handle(session_id, project_path, current_file).await,
     }
 }

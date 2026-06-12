@@ -4,6 +4,7 @@ pub mod models;
 pub mod prompt;
 pub mod run;
 pub mod session;
+pub mod tui;
 
 use anyhow::{Context, Result, bail};
 
