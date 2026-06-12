@@ -108,7 +108,9 @@ fn missing_api_token_fails_with_setup_hint() {
         .args(["prompt", "hi"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Settings → API Tokens"));
+        .stderr(predicate::str::contains(
+            "Settings → Integrations → API Tokens",
+        ));
 }
 
 #[test]

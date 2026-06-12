@@ -15,7 +15,8 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(10);
 pub enum ClientError {
     #[error(
         "not authenticated by Odysseus (HTTP 401).\n\
-         Create an API token in the Odysseus web UI (Settings → API Tokens) and run:\n\
+         Create an API token in the Odysseus web UI (Settings → Integrations → API Tokens,\n\
+         admin only) and run:\n\
          odysseus-code config set api_key ody_...\n\
          (or export ODYSSEUS_API_TOKEN)"
     )]
@@ -269,7 +270,10 @@ mod tests {
 
         let err = client(&server).chat("s1", "hi").await.unwrap_err();
         assert!(matches!(err, ClientError::Unauthorized));
-        assert!(err.to_string().contains("Settings → API Tokens"));
+        assert!(
+            err.to_string()
+                .contains("Settings → Integrations → API Tokens")
+        );
     }
 
     #[tokio::test]

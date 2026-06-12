@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Base URL of the Odysseus instance.
     pub endpoint: String,
-    /// Odysseus API token (`ody_…`), created in Settings → API Tokens.
+    /// Odysseus API token (`ody_…`), created in Settings → Integrations →
+    /// API Tokens (admin only).
     pub api_key: String,
     /// Preferred model ID for new sessions (empty = first available).
     pub model: String,

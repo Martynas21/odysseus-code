@@ -41,7 +41,10 @@ working Docker daemon.
 ## Setup: API token
 
 1. Open the Odysseus web UI (default `http://localhost:7000`).
-2. Go to Settings -> API Tokens and create a token (`ody_...`).
+2. Go to Settings -> Integrations and scroll to the "API Tokens" card
+   (admin only; if it is missing, enable the "API Tokens" toggle under
+   Settings -> System). Name the token, leave scopes blank (defaults to
+   `chat`), and copy the `ody_...` value -- it is shown only once.
 3. Tell odysseus-code about it:
 
 ```sh
