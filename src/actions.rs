@@ -1,9 +1,5 @@
 pub mod config_cmd;
-pub mod generate;
 pub mod models;
-pub mod prompt;
-pub mod run;
-pub mod session;
 pub mod tui;
 
 use anyhow::{Context, Result, bail};
@@ -12,24 +8,14 @@ use crate::client::OdysseusClient;
 use crate::config::Config;
 use crate::session::{DEFAULT_SESSION_NAME, SessionStore};
 
-/// Resolve which server session a command should talk to.
+/// Resolve which server session the TUI should talk to, returning the friendly
+/// session name the resolved ID is stored under (when there is one).
 ///
-/// Order: explicit `--session-id` (local name, else raw server ID) → the
-/// active session set by `session start` → a lazily created/reused server
-/// session named "odysseus-code". New mappings are persisted to the store.
-pub async fn resolve_session(
-    client: &OdysseusClient,
-    cfg: &Config,
-    store: &mut SessionStore,
-    explicit: Option<&str>,
-) -> Result<String> {
-    Ok(resolve_session_named(client, cfg, store, explicit).await?.1)
-}
-
-/// Like [`resolve_session`], but also returns the friendly session name the
-/// resolved ID is stored under (when there is one). A raw server-ID launch has
-/// no friendly name, so the name is `None`. Callers that may later remap the
-/// session (e.g. the TUI's `/clear`) need the name to update the store.
+/// Order: explicit `--session-id` (local name, else raw server ID) → a lazily
+/// created/reused server session named "odysseus-code". A raw server-ID launch
+/// has no friendly name, so the name is `None`. Callers that may later remap the
+/// session (e.g. the TUI's `/clear`) need the name to update the store. New
+/// mappings are persisted to the store.
 pub async fn resolve_session_named(
     client: &OdysseusClient,
     cfg: &Config,
@@ -42,10 +28,6 @@ pub async fn resolve_session_named(
         }
         // Not a known local name — assume it's a raw server session ID.
         return Ok((None, wanted.to_string()));
-    }
-
-    if let Some((name, id)) = store.active() {
-        return Ok((Some(name.to_string()), id.to_string()));
     }
 
     // Cached default from a previous run?
@@ -76,8 +58,34 @@ pub async fn create_session(
     cfg: &Config,
     name: &str,
 ) -> Result<crate::client::SessionInfo> {
-    let (endpoint_id, model) = if !cfg.endpoint_id.is_empty() && !cfg.model.is_empty() {
-        (cfg.endpoint_id.clone(), cfg.model.clone())
+    let (endpoint_id, model) = if !cfg.endpoint_id.is_empty() {
+        // Honor the configured endpoint_id; never override it from /api/models.
+        if !cfg.model.is_empty() {
+            // Both set: fast path, no need to hit the backend.
+            (cfg.endpoint_id.clone(), cfg.model.clone())
+        } else {
+            // Endpoint set but model left to "first available": resolve a model
+            // for THAT endpoint from /api/models without changing the endpoint.
+            let endpoints = client.list_models().await?;
+            let pick = endpoints
+                .iter()
+                .find(|e| e.endpoint_id == cfg.endpoint_id)
+                .with_context(|| {
+                    format!(
+                        "configured endpoint_id '{}' not found on the Odysseus backend; \
+                         run `odysseus-code models` to see what is available",
+                        cfg.endpoint_id
+                    )
+                })?;
+            let model = pick.first_model().with_context(|| {
+                format!(
+                    "configured endpoint_id '{}' has no available models; \
+                     run `odysseus-code models` to see what is available",
+                    cfg.endpoint_id
+                )
+            })?;
+            (cfg.endpoint_id.clone(), model)
+        }
     } else {
         let endpoints = client.list_models().await?;
         let pick = endpoints
@@ -105,11 +113,7 @@ pub async fn create_session(
                 }
             })?;
         let model = if cfg.model.is_empty() {
-            pick.models
-                .first()
-                .or_else(|| pick.models_extra.first())
-                .cloned()
-                .unwrap_or_default()
+            pick.first_model().unwrap_or_default()
         } else {
             cfg.model.clone()
         };

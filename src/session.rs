@@ -9,15 +9,13 @@ pub const DEFAULT_SESSION_NAME: &str = "odysseus-code";
 
 /// Local map of friendly session names to Odysseus server session IDs.
 /// Conversation history itself lives server-side; this store only remembers
-/// which server session a name refers to and which one is active.
+/// which server session a name refers to.
 /// Persisted at `~/.cache/odysseus-code/sessions.json`
 /// (or `$ODYSSEUS_CODE_CACHE_DIR/sessions.json`).
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionStore {
     #[serde(default)]
     sessions: BTreeMap<String, String>,
-    #[serde(default)]
-    active: Option<String>,
 }
 
 impl SessionStore {
@@ -57,25 +55,6 @@ impl SessionStore {
         self.sessions
             .insert(name.to_string(), server_id.to_string());
     }
-
-    /// Remove a mapping; clears the active pointer if it referred to it.
-    /// Returns the removed server ID.
-    pub fn remove(&mut self, name: &str) -> Option<String> {
-        if self.active.as_deref() == Some(name) {
-            self.active = None;
-        }
-        self.sessions.remove(name)
-    }
-
-    /// The active session as (name, server_id), if any.
-    pub fn active(&self) -> Option<(&str, &str)> {
-        let name = self.active.as_deref()?;
-        Some((name, self.server_id(name)?))
-    }
-
-    pub fn set_active(&mut self, name: &str) {
-        self.active = Some(name.to_string());
-    }
 }
 
 pub fn store_path() -> Result<PathBuf> {
@@ -102,33 +81,21 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_persists_sessions_and_active() {
+    fn roundtrip_persists_sessions() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.json");
 
         let mut store = SessionStore::default();
         store.insert("my-project", "srv-123");
-        store.set_active("my-project");
         store.save_to(&path).unwrap();
 
         let loaded = SessionStore::load_from(&path).unwrap();
         assert_eq!(loaded.server_id("my-project"), Some("srv-123"));
-        assert_eq!(loaded.active(), Some(("my-project", "srv-123")));
     }
 
     #[test]
-    fn remove_clears_active_pointer() {
-        let mut store = SessionStore::default();
-        store.insert("a", "1");
-        store.set_active("a");
-        assert_eq!(store.remove("a"), Some("1".to_string()));
-        assert_eq!(store.active(), None);
-    }
-
-    #[test]
-    fn active_with_dangling_name_is_none() {
-        let mut store = SessionStore::default();
-        store.set_active("ghost");
-        assert_eq!(store.active(), None);
+    fn unknown_name_has_no_server_id() {
+        let store = SessionStore::default();
+        assert_eq!(store.server_id("ghost"), None);
     }
 }

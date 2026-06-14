@@ -3,7 +3,6 @@ mod cli;
 mod client;
 mod config;
 mod context;
-mod sandbox;
 mod session;
 
 use anyhow::Result;
@@ -24,29 +23,6 @@ async fn main() -> Result<()> {
         None | Some(Command::Tui) => {
             actions::tui::handle(session_id, project_path, current_file).await
         }
-        Some(Command::Prompt { text }) => {
-            actions::prompt::handle(&text, session_id, project_path, current_file).await
-        }
-        Some(Command::Generate {
-            lang,
-            description,
-            format,
-        }) => {
-            actions::generate::handle(
-                &lang,
-                &description,
-                format,
-                session_id,
-                project_path,
-                current_file,
-            )
-            .await
-        }
-        Some(Command::Run { code, lang }) => {
-            let exit = actions::run::handle(code.as_deref(), lang.as_deref())?;
-            std::process::exit(exit);
-        }
-        Some(Command::Session { action }) => actions::session::handle(action).await,
         Some(Command::Models) => actions::models::handle().await,
         Some(Command::Config { action }) => actions::config_cmd::handle(action),
     }

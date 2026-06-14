@@ -52,6 +52,16 @@ pub struct ModelEndpoint {
     pub models_extra: Vec<String>,
 }
 
+impl ModelEndpoint {
+    /// First usable model for this endpoint, preferring the primary list.
+    pub fn first_model(&self) -> Option<String> {
+        self.models
+            .first()
+            .or_else(|| self.models_extra.first())
+            .cloned()
+    }
+}
+
 /// Session info from `POST /api/session` and `GET /api/sessions`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionInfo {
@@ -146,13 +156,6 @@ impl OdysseusClient {
         self.parse(response).await
     }
 
-    pub async fn delete_session(&self, session_id: &str) -> Result<(), ClientError> {
-        let url = format!("{}/api/session/{session_id}", self.base);
-        let response = self.send(self.http.delete(&url)).await?;
-        self.check_status(response).await?;
-        Ok(())
-    }
-
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>, ClientError> {
         let url = format!("{}/api/sessions", self.base);
         let response = self.send(self.http.get(&url)).await?;
@@ -167,7 +170,11 @@ impl OdysseusClient {
     }
 
     pub async fn history(&self, session_id: &str) -> Result<Vec<HistoryMessage>, ClientError> {
-        let url = format!("{}/api/history/{session_id}", self.base);
+        let url = format!(
+            "{}/api/history/{}",
+            self.base,
+            encode_path_segment(session_id)
+        );
         let response = self.send(self.http.get(&url)).await?;
         let parsed: HistoryResponse = self.parse(response).await?;
         Ok(parsed.history)
@@ -177,6 +184,8 @@ impl OdysseusClient {
         let req = req
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Accept", "application/json");
+        // The request isn't built yet here, so the full URL is unavailable;
+        // fall back to the base URL for the error context.
         let built = req.build().map_err(|e| ClientError::Network {
             url: self.base.clone(),
             source: e,
@@ -211,6 +220,30 @@ impl OdysseusClient {
         serde_json::from_str(&body)
             .map_err(|e| ClientError::BadResponse(format!("{e} — body: {}", snippet(&body))))
     }
+}
+
+/// Percent-encode a string for use as a single URL path segment.
+///
+/// Any byte that is not an RFC 3986 "unreserved" character
+/// (ALPHA / DIGIT / `-` / `.` / `_` / `~`) is escaped as `%XX`. This keeps
+/// arbitrary user-supplied session ids (which may contain spaces or `/`) from
+/// producing a malformed URL.
+fn encode_path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    out
 }
 
 fn retry_after(response: &reqwest::Response) -> Duration {
@@ -368,20 +401,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_session_hits_session_path() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("DELETE", "/api/session/abc123")
-            .with_status(200)
-            .with_body(r#"{"status":"deleted"}"#)
-            .create_async()
-            .await;
-
-        client(&server).delete_session("abc123").await.unwrap();
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
     async fn list_models_parses_endpoints() {
         let mut server = mockito::Server::new_async().await;
         server
@@ -416,6 +435,15 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].role, "assistant");
         assert_eq!(history[1].content, "hey");
+    }
+
+    #[test]
+    fn encode_path_segment_escapes_unsafe_chars() {
+        assert_eq!(encode_path_segment("a b/c"), "a%20b%2Fc");
+        assert_eq!(encode_path_segment("abc-1.2_3~"), "abc-1.2_3~");
+        // Simple ids used elsewhere must round-trip unchanged.
+        assert_eq!(encode_path_segment("abc123"), "abc123");
+        assert_eq!(encode_path_segment("raw-id-9"), "raw-id-9");
     }
 
     #[test]

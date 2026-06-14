@@ -53,8 +53,8 @@ impl PromptContext {
     }
 }
 
-/// Map a file extension to a language name understood by the model and the
-/// sandbox. Extend this table to support more languages.
+/// Map a file extension to a language name understood by the model.
+/// Extend this table to support more languages.
 pub fn language_for_extension(ext: &str) -> Option<&'static str> {
     Some(match ext.to_ascii_lowercase().as_str() {
         "rs" => "rust",

@@ -20,8 +20,6 @@ pub struct Config {
     pub endpoint_id: String,
     /// Language assumed when none can be inferred from the current file.
     pub default_language: String,
-    /// Container image used by the `run` sandbox.
-    pub sandbox_image: String,
 }
 
 impl Default for Config {
@@ -32,7 +30,6 @@ impl Default for Config {
             model: String::new(),
             endpoint_id: String::new(),
             default_language: "rust".into(),
-            sandbox_image: "rust:slim".into(),
         }
     }
 }
@@ -43,7 +40,6 @@ const KEYS: &[&str] = &[
     "model",
     "endpoint_id",
     "default_language",
-    "sandbox_image",
 ];
 
 impl Config {
@@ -84,10 +80,14 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("creating config directory {}", dir.display()))?;
+            // The config holds an `ody_…` token, so keep the directory private.
+            restrict_permissions(dir, 0o700)?;
         }
         let yaml = serde_yaml::to_string(self)?;
-        std::fs::write(path, yaml)
-            .with_context(|| format!("writing config file {}", path.display()))
+        // Create the file already private (0600 on unix) so the secret API
+        // token is never momentarily world-readable between write and chmod.
+        write_file_private(path, &yaml)?;
+        Ok(())
     }
 
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
@@ -97,7 +97,6 @@ impl Config {
             "model" => self.model = value.to_string(),
             "endpoint_id" => self.endpoint_id = value.to_string(),
             "default_language" => self.default_language = value.to_lowercase(),
-            "sandbox_image" => self.sandbox_image = value.to_string(),
             other => bail!(
                 "unknown config key '{other}' (valid keys: {})",
                 KEYS.join(", ")
@@ -113,13 +112,46 @@ impl Config {
             "model" => self.model.clone(),
             "endpoint_id" => self.endpoint_id.clone(),
             "default_language" => self.default_language.clone(),
-            "sandbox_image" => self.sandbox_image.clone(),
             other => bail!(
                 "unknown config key '{other}' (valid keys: {})",
                 KEYS.join(", ")
             ),
         })
     }
+}
+
+/// Write `contents` to `path`, creating the file private to the owner (0600 on
+/// unix) so the API token is never momentarily world-readable. An existing file
+/// keeps its old mode through `OpenOptions`, so it is re-secured afterward too.
+fn write_file_private(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(path)
+        .with_context(|| format!("writing config file {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("writing config file {}", path.display()))?;
+    restrict_permissions(path, 0o600)?;
+    Ok(())
+}
+
+/// Restrict a config path (dir or file) to the owner. No-op on non-unix.
+fn restrict_permissions(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .with_context(|| format!("securing {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    Ok(())
 }
 
 pub fn config_dir() -> Result<PathBuf> {
@@ -173,6 +205,17 @@ mod tests {
         let mut cfg = Config::default();
         assert!(cfg.set("nope", "x").is_err());
         assert!(cfg.get("nope").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_to_restricts_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        Config::default().save_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

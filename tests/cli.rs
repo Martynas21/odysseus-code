@@ -8,11 +8,7 @@ fn bin() -> Command {
 #[test]
 fn help_lists_all_subcommands() {
     bin().arg("--help").assert().success().stdout(
-        predicate::str::contains("prompt")
-            .and(predicate::str::contains("generate"))
-            .and(predicate::str::contains("run"))
-            .and(predicate::str::contains("session"))
-            .and(predicate::str::contains("models"))
+        predicate::str::contains("models")
             .and(predicate::str::contains("config"))
             .and(predicate::str::contains("tui")),
     );
@@ -46,19 +42,8 @@ fn unknown_subcommand_fails_with_usage() {
 }
 
 #[test]
-fn prompt_without_text_fails() {
-    bin()
-        .arg("prompt")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("required"));
-}
-
-#[test]
 fn subcommands_have_their_own_help() {
-    for sub in [
-        "prompt", "generate", "run", "session", "models", "config", "tui",
-    ] {
+    for sub in ["models", "config", "tui"] {
         bin().args([sub, "--help"]).assert().success();
     }
 }

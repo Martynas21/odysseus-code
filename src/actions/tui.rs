@@ -5,7 +5,7 @@ use anyhow::Result;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
@@ -47,8 +47,15 @@ struct App {
     /// When true, the status bar also shows the endpoint and session id.
     /// Toggled with Tab (Ctrl+I); off by default to keep the chrome minimal.
     show_details: bool,
-    /// Start time, used to animate the background ship.
+    /// Start time, used for the steady, mode-independent bird wing-beat.
     started: Instant,
+    /// Accumulated drift phase for the scrolling sky and waves. Advanced each
+    /// frame by the elapsed time, faster while `thinking`, so entering thinking
+    /// mode accelerates the scene from where it is instead of jumping.
+    anim_phase: f64,
+    /// Wall-clock instant of the previous frame, used to measure that elapsed
+    /// time.
+    last_tick: Instant,
 }
 
 impl App {
@@ -77,6 +84,8 @@ impl App {
             thinking: false,
             show_details: false,
             started: Instant::now(),
+            anim_phase: 0.0,
+            last_tick: Instant::now(),
         }
     }
 
@@ -244,15 +253,13 @@ async fn start_new_session(
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
-    let [msg_area, input_area, status_area] = Layout::vertical([
+    let [msg_area, ship_area, input_area, status_area] = Layout::vertical([
         Constraint::Min(1),
+        Constraint::Length(BOAT_BAND_HEIGHT),
         Constraint::Length(3),
         Constraint::Length(1),
     ])
     .areas(frame.area());
-
-    // Background ship, drawn first so the transcript text overlays it.
-    render_ship(frame, msg_area, app.started.elapsed().as_secs_f64());
 
     // Transcript pane. Text is pre-wrapped so the scroll offset is exact.
     let width = msg_area.width.saturating_sub(2).max(1) as usize;
@@ -269,10 +276,24 @@ fn draw(frame: &mut Frame, app: &mut App) {
         msg_area,
     );
 
+    // Boat banner: its own band between transcript and prompt, so the
+    // conversation can never collide with it. The scene drifts constantly and
+    // speeds up while a reply is pending, accelerating smoothly from its current
+    // phase rather than resetting.
+    let now = Instant::now();
+    let dt = now.saturating_duration_since(app.last_tick).as_secs_f64();
+    app.last_tick = now;
+    app.anim_phase = anim_step(app.anim_phase, dt, app.thinking);
+    render_banner(
+        frame,
+        ship_area,
+        app.anim_phase,
+        app.started.elapsed().as_secs_f64(),
+    );
+
     // Input line.
     frame.render_widget(
-        Paragraph::new(app.input.as_str())
-            .block(Block::bordered().title("prompt")),
+        Paragraph::new(app.input.as_str()).block(Block::bordered().title("prompt")),
         input_area,
     );
     let cursor_x = (app.input.chars().count() as u16).min(input_area.width.saturating_sub(2));
@@ -297,135 +318,178 @@ fn status_line(app: &App) -> String {
     status
 }
 
-/// A detailed three-masted galleon, tall centre mast flanked by shorter fore
-/// and aft masts of billowing sails, riding the sea at the foot of the pane.
-/// `ODYSSEUS-CODE` is centred on the hull. Spaces are transparent; every other
-/// glyph is painted dimmed.
-const SHIP: &[&str] = &[
-    "                    |>",
-    "                    |)",
-    "                    |_)",
-    "      |)            |__)          |)",
-    "      |_)           |___)         |_)",
-    "      |__)          |____)        |__)",
-    "      |___)         |_____)       |___)",
-    "      |__)          |____)        |__)",
-    "  ____|_____________|_____________|____",
-    "  \\ o   o   o   o   o   o   o   o   o /",
-    "   \\           ODYSSEUS-CODE         /",
-    "    \\_______________________________/",
-];
+/// A small triangle-sailed dinghy: two rows of sail above a hull that rides the
+/// waterline. Spaces are transparent; every other glyph is painted dimmed.
+const BOAT: &[&str] = &[" |\\", " |_\\", "\\____/"];
 
-/// Number of scrolling wave rows that form the sea at the foot of the pane.
-const SEA_ROWS: i32 = 4;
+/// Height of the boat band, in rows: one sky row for the clouds and birds, the
+/// boat's two sail rows, and the rippling waterline its hull sits on.
+const BOAT_BAND_HEIGHT: u16 = 4;
 
-/// How many of the ship's bottom rows sit inside the sea, so the hull rides in
-/// the water and the waves behind it stay visible through the gaps.
-const HULL_SUBMERGE: i32 = 2;
+/// Clouds drift along the top of the band. The small one is a single row; the
+/// big one is two rows, so its underside spills onto the first sail row — and,
+/// drawn in front of the boat, hides the sail there. Spaces are transparent.
+const CLOUD_SMALL: &[&str] = &[".-~-."];
+const CLOUD_BIG: &[&str] = &[".-~-.", "(___)"];
 
-/// Open-sea swell: full height, lively spatial frequency, drifting at the
-/// natural wave speed. The higher frequency lets many crests ripple across the
-/// water at once.
-const SEA_AMPLITUDE: f64 = 1.2;
-const SEA_SPEED: f64 = 1.0;
-const SEA_FREQUENCY: f64 = 0.10;
+/// Birds flit through the two sail rows behind the boat (the sails paint over,
+/// hiding, any that overlap). Each flaps by alternating a down-stroke `v` and an
+/// up-stroke `^` at `BIRD_FLAP_RATE` beats per second.
+const BIRD_DOWN: char = 'v';
+const BIRD_UP: char = '^';
+const BIRD_FLAP_RATE: f64 = 5.0;
 
-/// Ship swell: a heavy hull has inertia, so it answers the water with a smaller
-/// amplitude, a slower roll, and a *much* lower spatial frequency. Because cells
-/// can only step by whole rows, a high frequency would shear the hull at every
-/// wavefront; keeping the wavelength far wider than the ship means neighbouring
-/// columns almost always share the same offset, so at most one gentle step ever
-/// travels under the hull instead of a ripple of tears.
-const SHIP_AMPLITUDE: f64 = 0.6;
-const SHIP_SPEED: f64 = 0.5;
-const SHIP_FREQUENCY: f64 = 0.035;
+/// Crest drift of the waterline, in radians of phase per unit drift. A higher
+/// cadence packs the crests so the water reads as moving.
+const WAVE_CADENCE: f64 = 1.2;
 
-/// Per-column vertical displacement (in rows) of a swell at horizontal position
-/// `x` and time `t`, scaled by `amplitude`, travelling leftward at `speed`, with
-/// spatial `frequency` setting how tightly crests pack. Crests travel toward
-/// smaller `x` so the ship reads as sailing forward (to the right). A low
-/// frequency keeps neighbouring columns nearly level so the art shears by at
-/// most one row.
-fn column_wave_offset(x: i32, t: f64, amplitude: f64, speed: f64, frequency: f64) -> i32 {
-    ((x as f64 * frequency + t * speed).sin() * amplitude).round() as i32
+/// Sky drift speeds, in columns per unit drift. Parallax: clouds (far) crawl,
+/// birds (nearer) are quicker, and both trail the water.
+const CLOUD_SPEED: f64 = 1.5;
+const BIRD_SPEED: f64 = 2.5;
+
+/// How much faster the whole scene drifts while a reply is pending. The drift
+/// phase is accumulated (see `anim_step`), so this only changes the *rate* — the
+/// scene accelerates from its current position rather than jumping.
+const THINK_SPEEDUP: f64 = 4.0;
+
+/// Advance the accumulated drift phase by one frame's `dt` seconds, scaled up
+/// while `thinking`. `dt` is clamped so a delayed frame can't lurch the scene.
+fn anim_step(phase: f64, dt: f64, thinking: bool) -> f64 {
+    let rate = if thinking { THINK_SPEEDUP } else { 1.0 };
+    phase + dt.clamp(0.0, 0.25) * rate
 }
 
-/// Draw the animated ship and sea inside `area`'s border. The sea is painted
-/// first so it shows through the ship's gaps; the hull then rides a couple of
-/// rows into it. Both the water and the ship are lifted by the same per-column
-/// swell, so the ship rolls with the waves. Cells are only painted within the
-/// bordered interior; `put` clips anything that falls outside.
-fn render_ship(frame: &mut Frame, area: Rect, t: f64) {
-    let inner = area.inner(Margin::new(1, 1));
-    let ship_h = SHIP.len() as i32;
-    let ship_w = SHIP.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
-    // Skip rendering when the pane can't hold the ship riding in its sea.
-    if (inner.width as i32) < ship_w || (inner.height as i32) < ship_h + SEA_ROWS - HULL_SUBMERGE {
-        return;
+/// Glyph of the swell at column `x` and time `t`: `^` crest, `_` trough, `~`
+/// between. `cadence` sets how fast crests drift past a fixed column, so a
+/// higher cadence makes the water rush by.
+fn wave_glyph(x: i32, t: f64, cadence: f64) -> char {
+    let v = (x as f64 * 0.30 + t * cadence).sin();
+    if v > 0.5 {
+        '^'
+    } else if v < -0.5 {
+        '_'
+    } else {
+        '~'
     }
+}
 
-    let style = Style::new().fg(Color::Blue).add_modifier(Modifier::DIM);
-    let buf = frame.buffer_mut();
-    let sea_top = inner.bottom() as i32 - SEA_ROWS;
-
-    // The ship: centred, riding HULL_SUBMERGE rows into the sea, and lifted by
-    // its own gentler swell so it rolls with the water instead of bobbing as a
-    // block.
-    let base_x = inner.x as i32 + (inner.width as i32 - ship_w) / 2;
-    let base_y = sea_top - ship_h + HULL_SUBMERGE;
-    let ship_y =
-        |x: i32, ry: i32| base_y + ry + column_wave_offset(x, t, SHIP_AMPLITUDE, SHIP_SPEED, SHIP_FREQUENCY);
-
-    // The ship's opaque silhouette: every cell from a row's first to its last
-    // glyph, keyed at the ship's own swell offset. Because the hull rolls more
-    // gently than the water, sea and ship occupy different rows in the overlap
-    // band; without this mask the waves would tear through the solid hull. We
-    // skip the sea on these cells so the water only shows through true gaps
-    // below and around the ship.
-    let mut occluded: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
-    for (ry, line) in SHIP.iter().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
-        let first = chars.iter().position(|&c| c != ' ');
-        let last = chars.iter().rposition(|&c| c != ' ');
-        if let (Some(first), Some(last)) = (first, last) {
-            for cx in first..=last {
-                let x = base_x + cx as i32;
-                occluded.insert((x, ship_y(x, ry as i32)));
-            }
-        }
+/// A flapping bird's wing at time `t`, offset by `phase` so a flock doesn't beat
+/// in unison: the down-stroke `v` and up-stroke `^` alternate at `BIRD_FLAP_RATE`.
+fn bird_glyph(t: f64, phase: f64) -> char {
+    if ((t * BIRD_FLAP_RATE + phase) as i64).rem_euclid(2) == 0 {
+        BIRD_DOWN
+    } else {
+        BIRD_UP
     }
+}
 
-    // The sea: crests drift sideways over time (a per-row phase shift layers
-    // the rows) and the whole surface rides the swell. Cells behind the ship's
-    // hull are left unpainted so the water never bleeds through it.
-    for row in 0..SEA_ROWS {
-        for sx in 0..inner.width as i32 {
-            let x = inner.x as i32 + sx;
-            let y = sea_top + row + column_wave_offset(x, t, SEA_AMPLITUDE, SEA_SPEED, SEA_FREQUENCY);
-            if occluded.contains(&(x, y)) {
-                continue;
-            }
-            let v = (sx as f64 * 0.30 + t * 1.2 + row as f64 * 0.8).sin();
-            let ch = if v > 0.5 {
-                '^'
-            } else if v < -0.5 {
-                '_'
-            } else {
-                '~'
-            };
-            put(buf, inner, x, y, ch, style);
-        }
-    }
+/// Left-edge column of a sprite that scrolls leftward and wraps. `phase` is its
+/// start offset in columns, `t` the elapsed time, `speed` its drift in columns
+/// per second, `span` the wrap width (band width + sprite width) and `sprite_w`
+/// the sprite's width. The result runs from `-sprite_w` (just off the left) up
+/// to `span - sprite_w` (just off the right), so the sprite re-enters smoothly.
+fn scroll_x(phase: f64, t: f64, speed: f64, span: i32, sprite_w: i32) -> i32 {
+    (phase - t * speed).rem_euclid(span as f64) as i32 - sprite_w
+}
 
-    // The hull and rigging, drawn over the cleared silhouette.
-    for (ry, line) in SHIP.iter().enumerate() {
+/// Width (in display columns) of the widest row of a sprite.
+fn sprite_width(sprite: &[&str]) -> i32 {
+    sprite.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32
+}
+
+/// Paint a multi-row sprite at `(x, y)`, treating spaces as transparent. Later
+/// `put_sprite` calls overpaint earlier ones, so draw order sets the z-order.
+fn put_sprite(buf: &mut Buffer, area: Rect, sprite: &[&str], x: i32, y: i32, style: Style) {
+    for (ry, line) in sprite.iter().enumerate() {
         for (cx, ch) in line.chars().enumerate() {
             if ch == ' ' {
                 continue;
             }
-            let x = base_x + cx as i32;
-            put(buf, inner, x, ship_y(x, ry as i32), ch, style);
+            put(buf, area, x + cx as i32, y + ry as i32, ch, style);
         }
+    }
+}
+
+/// Draw the sky, boat, and rippling waterline into `area` (no border; the band
+/// spans the full width). Layered back to front so the z-order reads right:
+/// birds (behind the sails) → water → boat → clouds (in front of the sails).
+/// The boat stays parked at centre; the water, clouds, and birds scroll by
+/// `drift` (accumulated upstream, faster while thinking) so the boat reads as
+/// speeding along without moving. Wings flap on the real-time `flap_t` so they
+/// stay a steady beat regardless of drift speed. `put` clips outside `area`.
+fn render_banner(frame: &mut Frame, area: Rect, drift: f64, flap_t: f64) {
+    let boat_w = sprite_width(BOAT);
+    let boat_h = BOAT.len() as i32;
+    // Nothing sensible to draw if the band can't hold the boat and a sky row.
+    if (area.height as i32) <= boat_h || (area.width as i32) < boat_w {
+        return;
+    }
+
+    let style = Style::new().fg(Color::Blue).add_modifier(Modifier::DIM);
+
+    let width = area.width as i32;
+    let sky_top = area.y as i32;
+    let water_y = area.bottom() as i32 - 1;
+    let buf = frame.buffer_mut();
+
+    // Birds first, scattered across the two sail rows, so the boat's sails paint
+    // over (hide) any that overlap them.
+    let bird_w = 1;
+    let bird_span = width + bird_w;
+    for (i, &(frac, row)) in [(0.10, 1), (0.38, 2), (0.63, 1), (0.86, 2)]
+        .iter()
+        .enumerate()
+    {
+        let x = scroll_x(
+            frac * bird_span as f64,
+            drift,
+            BIRD_SPEED,
+            bird_span,
+            bird_w,
+        );
+        put(
+            buf,
+            area,
+            x,
+            sky_top + row,
+            bird_glyph(flap_t, i as f64),
+            style,
+        );
+    }
+
+    // The waterline: the band's bottom row, rippling across its full width.
+    for sx in 0..width {
+        let x = area.x as i32 + sx;
+        put(
+            buf,
+            area,
+            x,
+            water_y,
+            wave_glyph(x, drift, WAVE_CADENCE),
+            style,
+        );
+    }
+
+    // The boat, hull on the waterline and sails above, parked at centre and
+    // drawn over the birds and swell so neither shows through the solid hull.
+    let base_x = area.x as i32 + (width - boat_w) / 2;
+    let base_y = water_y - (boat_h - 1);
+    put_sprite(buf, area, BOAT, base_x, base_y, style);
+
+    // Clouds last, along the top row, so a big cloud's underside hides the first
+    // sail row where it overlaps.
+    let cloud_w = sprite_width(CLOUD_BIG);
+    let cloud_span = width + cloud_w;
+    for &(frac, sprite) in &[(0.00, CLOUD_BIG), (0.45, CLOUD_SMALL), (0.72, CLOUD_BIG)] {
+        let x = scroll_x(
+            frac * cloud_span as f64,
+            drift,
+            CLOUD_SPEED,
+            cloud_span,
+            cloud_w,
+        );
+        put_sprite(buf, area, sprite, x, sky_top, style);
     }
 }
 
@@ -623,91 +687,226 @@ mod tests {
     }
 
     #[test]
-    fn column_wave_offset_is_strict_and_ship_rides_softer() {
-        let mut sea_moves = 0;
-        let mut ship_moves = 0;
-        // Adjacent-column offset changes are the visible "tears" in the art; the
-        // ship's gentler frequency must keep these far rarer than the sea's.
-        let mut sea_tears = 0;
-        let mut ship_tears = 0;
-        for step in 0..100 {
-            let t = step as f64 * 0.1;
-            let mut prev_sea = None;
-            let mut prev_ship = None;
-            for x in 0..400 {
-                let sea = column_wave_offset(x, t, SEA_AMPLITUDE, SEA_SPEED, SEA_FREQUENCY);
-                let ship = column_wave_offset(x, t, SHIP_AMPLITUDE, SHIP_SPEED, SHIP_FREQUENCY);
-                // Both are clamped to a single row so nothing shears by more than one.
-                assert!((-1..=1).contains(&sea), "sea {sea} out of range");
-                assert!((-1..=1).contains(&ship), "ship {ship} out of range");
-                sea_moves += i32::from(sea != 0);
-                ship_moves += i32::from(ship != 0);
-                sea_tears += i32::from(prev_sea.is_some_and(|p| p != sea));
-                ship_tears += i32::from(prev_ship.is_some_and(|p| p != ship));
-                prev_sea = Some(sea);
-                prev_ship = Some(ship);
+    fn wave_glyph_uses_only_swell_chars_and_ripples() {
+        // The waterline is built from exactly these three glyphs.
+        for x in 0..200 {
+            for step in 0..50 {
+                let g = wave_glyph(x, step as f64 * 0.1, WAVE_CADENCE);
+                assert!(matches!(g, '^' | '~' | '_'), "unexpected wave glyph {g:?}");
             }
         }
-        // The hull heaves on far fewer columns than the water around it.
-        assert!(ship_moves < sea_moves, "ship {ship_moves} >= sea {sea_moves}");
-        // And it shears between neighbours far less often, so it reads as smooth.
-        assert!(ship_tears * 2 < sea_tears, "ship tears {ship_tears} vs sea {sea_tears}");
-        // The swell travels: the surface differs as time advances.
-        let a: Vec<i32> =
-            (0..40).map(|x| column_wave_offset(x, 0.0, SEA_AMPLITUDE, SEA_SPEED, SEA_FREQUENCY)).collect();
-        let b: Vec<i32> =
-            (0..40).map(|x| column_wave_offset(x, 1.5, SEA_AMPLITUDE, SEA_SPEED, SEA_FREQUENCY)).collect();
-        assert_ne!(a, b);
+        // It ripples on its own: the row differs as the drift advances, so the
+        // water moves even while the boat sits still.
+        let a: String = (0..40).map(|x| wave_glyph(x, 0.0, WAVE_CADENCE)).collect();
+        let b: String = (0..40).map(|x| wave_glyph(x, 1.5, WAVE_CADENCE)).collect();
+        assert_ne!(a, b, "waterline did not move over time");
     }
 
     #[test]
-    fn waves_never_tear_through_the_hull() {
+    fn anim_step_accelerates_smoothly_without_resetting() {
+        // Thinking advances the drift faster than idle over the same frame.
+        let dt = 0.05;
+        assert!(
+            anim_step(0.0, dt, true) > anim_step(0.0, dt, false),
+            "thinking did not speed the drift up"
+        );
+        // Crucially, flipping into thinking continues from the current phase — a
+        // small forward step, never a jump — even after a long idle run. This is
+        // the whole point: speed up from where we are, don't reset.
+        let phase = 123.4; // a large accumulated phase, as after minutes idle
+        let next = anim_step(phase, dt, true);
+        assert!(
+            next > phase && next - phase < 1.0,
+            "drift jumped on entering thinking: {phase} -> {next}"
+        );
+        // A delayed frame can't lurch the scene: dt is clamped.
+        assert_eq!(
+            anim_step(0.0, 10.0, false),
+            anim_step(0.0, 0.25, false),
+            "dt was not clamped"
+        );
+    }
+
+    /// Render the band at drift/flap time `t` into rows of plain text.
+    #[cfg(test)]
+    fn banner_rows(area: Rect, t: f64) -> Vec<String> {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        // Across a full swell cycle the ship's opaque silhouette must hold: no
-        // sea crest (`~`/`^`, which the hull art never uses) may appear between
-        // a hull row's left and right edge. Before the occlusion mask the waves
-        // sheared straight through the solid hull because it rolled on a gentler
-        // offset than the water.
-        let area = Rect::new(0, 0, 46, 20);
-        for step in 0..40 {
-            let t = step as f64 * 0.2;
-            let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
-            terminal.draw(|f| render_ship(f, area, t)).unwrap();
-            let buf = terminal.backend().buffer();
+        let mut term = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        term.draw(|f| render_banner(f, area, t, t)).unwrap();
+        let buf = term.backend().buffer();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect()
+            })
+            .collect()
+    }
 
-            let inner = area.inner(Margin::new(1, 1));
-            let ship_w = SHIP.iter().map(|l| l.chars().count()).max().unwrap() as i32;
-            let base_x = inner.x as i32 + (inner.width as i32 - ship_w) / 2;
-            let base_y = inner.bottom() as i32 - SEA_ROWS - SHIP.len() as i32 + HULL_SUBMERGE;
+    #[test]
+    fn boat_holds_position_while_water_races() {
+        let area = Rect::new(0, 0, 40, BOAT_BAND_HEIGHT);
+        let last = area.height as usize - 1;
+        // The hull's `\`…`/` are the only such glyphs the band ever draws, so
+        // their columns pin the boat's position.
+        let hull_marks = |rows: &[String]| -> Vec<usize> {
+            rows[last]
+                .char_indices()
+                .filter(|&(_, c)| c == '\\' || c == '/')
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>()
+        };
 
-            for (ry, line) in SHIP.iter().enumerate() {
-                let chars: Vec<char> = line.chars().collect();
-                let (Some(first), Some(last)) = (
-                    chars.iter().position(|&c| c != ' '),
-                    chars.iter().rposition(|&c| c != ' '),
-                ) else {
-                    continue;
-                };
-                for cx in first..=last {
-                    let x = base_x + cx as i32;
-                    let y = base_y + ry as i32
-                        + column_wave_offset(x, t, SHIP_AMPLITUDE, SHIP_SPEED, SHIP_FREQUENCY);
-                    if x < inner.left() as i32
-                        || x >= inner.right() as i32
-                        || y < inner.top() as i32
-                        || y >= inner.bottom() as i32
-                    {
-                        continue;
-                    }
-                    let sym = buf[(x as u16, y as u16)].symbol();
+        let early = banner_rows(area, 0.5);
+        let later = banner_rows(area, 1.5);
+        // As the drift advances the hull occupies the same columns — the boat
+        // only ever sits at centre.
+        assert_eq!(
+            hull_marks(&early),
+            hull_marks(&later),
+            "boat shifted instead of staying put"
+        );
+        // But the waterline differs, because the swell has drifted on.
+        assert_ne!(
+            early[last], later[last],
+            "waterline did not move with the drift"
+        );
+    }
+
+    #[test]
+    fn render_banner_draws_boat_on_a_rippling_waterline() {
+        let area = Rect::new(0, 0, 40, BOAT_BAND_HEIGHT);
+        let rows = banner_rows(area, 0.0);
+
+        // A mast stands among the sail rows, the hull rides the bottom waterline,
+        // and open water (swell glyphs) flanks the hull on that same row.
+        assert!(
+            rows.iter().any(|r| r.contains('|')),
+            "no mast/sail anywhere: {rows:?}"
+        );
+        let waterline = &rows[area.height as usize - 1];
+        assert!(
+            waterline.contains('\\') && waterline.contains('/'),
+            "no hull on the waterline: {waterline:?}"
+        );
+        assert!(
+            waterline.chars().any(|c| matches!(c, '^' | '~' | '_')),
+            "no open water beside the hull: {waterline:?}"
+        );
+    }
+
+    #[test]
+    fn sky_drifts_left_and_wraps() {
+        let span = 45;
+        let w = 5;
+        // From a mid-band phase (clear of the wrap seam) the sprite slides left
+        // as the drift advances.
+        let phase = 20.0;
+        assert!(
+            scroll_x(phase, 0.0, CLOUD_SPEED, span, w) > scroll_x(phase, 1.0, CLOUD_SPEED, span, w),
+            "cloud did not drift left over time"
+        );
+        // It never strays outside its off-screen-either-side travel range.
+        for step in 0..200 {
+            let x = scroll_x(0.0, step as f64 * 0.1, CLOUD_SPEED, span, w);
+            assert!((-w..span - w).contains(&x), "cloud {x} left its range");
+        }
+    }
+
+    #[test]
+    fn birds_flap_between_wing_strokes() {
+        // Across time a bird shows both the down- and up-stroke, and nothing else.
+        let seen: std::collections::HashSet<char> =
+            (0..40).map(|s| bird_glyph(s as f64 * 0.1, 0.0)).collect();
+        assert!(
+            seen.contains(&'v') && seen.contains(&'^'),
+            "bird never flapped: {seen:?}"
+        );
+        assert!(
+            seen.iter().all(|c| matches!(c, 'v' | '^')),
+            "stray glyph: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn sails_block_birds_but_clouds_block_sails() {
+        let area = Rect::new(0, 0, 40, BOAT_BAND_HEIGHT);
+        let boat_w = sprite_width(BOAT);
+        let base_x = (area.width as i32 - boat_w) / 2;
+        let sky_top = area.y as i32;
+        // Solid sail glyphs: mast/spar on the first sail row, mast/spar on the
+        // second. (Coordinates mirror the BOAT sprite.)
+        let sail_cells = [
+            (base_x + 1, sky_top + 1), // '|'
+            (base_x + 2, sky_top + 1), // '\'
+            (base_x + 1, sky_top + 2), // '|'
+            (base_x + 3, sky_top + 2), // '\'
+        ];
+
+        let mut a_cloud_hid_a_sail = false;
+        for step in 0..400 {
+            let t = step as f64 * 0.1;
+            let rows = banner_rows(area, t);
+            for &(x, y) in &sail_cells {
+                let ch = rows[y as usize].chars().nth(x as usize).unwrap();
+                // Birds fly behind the sails, so neither wing-stroke (`v`/`^`) is
+                // ever painted onto a sail.
+                assert!(
+                    ch != 'v' && ch != '^',
+                    "bird showed through the sail at ({x},{y}) t={t}"
+                );
+                // Clouds are drawn in front, so a big one can replace a sail glyph
+                // on the first sail row.
+                if y == sky_top + 1 && matches!(ch, '.' | '-' | '~' | '(' | ')' | '_') {
+                    a_cloud_hid_a_sail = true;
+                }
+            }
+        }
+        assert!(a_cloud_hid_a_sail, "clouds never covered a sail");
+    }
+
+    #[test]
+    fn boat_banner_stays_out_of_the_transcript() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        // The boat lives in its own band between the transcript and the prompt,
+        // so the conversation can never collide with it — the old overlap that
+        // tinted transcript glyphs blue is now structurally impossible. Fill the
+        // transcript with a wall of text and confirm every blue boat/water cell
+        // sits inside the band, never up among the messages.
+        let cfg = Config::default();
+        let history: Vec<HistoryMessage> = (0..60)
+            .map(|_| HistoryMessage {
+                role: "assistant".into(),
+                content: "X".repeat(80),
+            })
+            .collect();
+        let mut app = App::new(&cfg, "s".into(), "m".into(), history);
+
+        let area = Rect::new(0, 0, 60, 30);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // The three fixed-height regions sit at the foot, so the boat band is the
+        // BOAT_BAND_HEIGHT rows above the prompt (3) and status (1).
+        let band_bottom = area.height - 1 - 3;
+        let band_top = band_bottom - BOAT_BAND_HEIGHT;
+
+        let mut blue_cells = 0;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if buf[(x, y)].fg == Color::Blue {
+                    blue_cells += 1;
                     assert!(
-                        sym != "~" && sym != "^",
-                        "wave {sym:?} inside hull at ({x},{y}) t={t}"
+                        (band_top..band_bottom).contains(&y),
+                        "boat glyph leaked outside its band at ({x},{y})"
                     );
                 }
             }
         }
+        assert!(blue_cells > 0, "boat band drew nothing");
     }
 
     #[test]
@@ -876,6 +1075,9 @@ mod tests {
             .await;
         let cfg = Config::default();
         let client = crate::client::OdysseusClient::new(server.url(), "tok");
-        assert_eq!(resolve_model_name(&client, &cfg, "missing").await, "unknown");
+        assert_eq!(
+            resolve_model_name(&client, &cfg, "missing").await,
+            "unknown"
+        );
     }
 }
