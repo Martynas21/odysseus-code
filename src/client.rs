@@ -82,6 +82,12 @@ struct HistoryResponse {
     history: Vec<HistoryMessage>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ModelsResponse {
+    #[serde(default)]
+    items: Vec<ModelEndpoint>,
+}
+
 impl OdysseusClient {
     pub fn new(base: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
@@ -156,7 +162,8 @@ impl OdysseusClient {
     pub async fn list_models(&self) -> Result<Vec<ModelEndpoint>, ClientError> {
         let url = format!("{}/api/models", self.base);
         let response = self.send(self.http.get(&url)).await?;
-        self.parse(response).await
+        let parsed: ModelsResponse = self.parse(response).await?;
+        Ok(parsed.items)
     }
 
     pub async fn history(&self, session_id: &str) -> Result<Vec<HistoryMessage>, ClientError> {
@@ -381,9 +388,10 @@ mod tests {
             .mock("GET", "/api/models")
             .with_status(200)
             .with_body(
-                r#"[{"host":"custom","port":0,"url":"http://x/v1/chat/completions",
+                r#"{"hosts":[],"items":[{"host":"custom","port":0,
+                     "url":"http://x/v1/chat/completions",
                      "models":["qwen3","gpt-oss"],"models_extra":[],
-                     "endpoint_id":"ep1","endpoint_name":"local llama"}]"#,
+                     "endpoint_id":"ep1","endpoint_name":"local llama"}]}"#,
             )
             .create_async()
             .await;

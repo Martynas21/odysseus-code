@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(name = "odysseus-code", version, about)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     /// Session ID to use for this command (overrides the active session)
     #[arg(long, global = true)]

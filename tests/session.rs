@@ -19,7 +19,7 @@ fn session_lifecycle_start_prompt_end() {
     // start: creates a server session named after the local id
     let models = server
         .mock("GET", "/api/models")
-        .with_body(r#"[{"endpoint_id":"ep1","endpoint_name":"local","models":["qwen3"],"models_extra":[]}]"#)
+        .with_body(r#"{"hosts":[],"items":[{"endpoint_id":"ep1","endpoint_name":"local","models":["qwen3"],"models_extra":[]}]}"#)
         .create();
     let create = server
         .mock("POST", "/api/session")

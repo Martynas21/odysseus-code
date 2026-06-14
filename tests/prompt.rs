@@ -23,7 +23,7 @@ fn prompt_lazily_creates_default_session_and_prints_reply() {
     let sessions = server.mock("GET", "/api/sessions").with_body("[]").create();
     let models = server
         .mock("GET", "/api/models")
-        .with_body(r#"[{"endpoint_id":"ep1","endpoint_name":"local","models":["qwen3"],"models_extra":[]}]"#)
+        .with_body(r#"{"hosts":[],"items":[{"endpoint_id":"ep1","endpoint_name":"local","models":["qwen3"],"models_extra":[]}]}"#)
         .create();
     let create = server
         .mock("POST", "/api/session")
@@ -121,7 +121,7 @@ fn models_lists_endpoints() {
 
     server
         .mock("GET", "/api/models")
-        .with_body(r#"[{"endpoint_id":"ep1","endpoint_name":"local llama","models":["qwen3","gpt-oss"],"models_extra":["extra-model"]}]"#)
+        .with_body(r#"{"hosts":[],"items":[{"endpoint_id":"ep1","endpoint_name":"local llama","models":["qwen3","gpt-oss"],"models_extra":["extra-model"]}]}"#)
         .create();
 
     cmd(&server.url(), config_dir.path(), cache_dir.path())

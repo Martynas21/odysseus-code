@@ -19,14 +19,19 @@ async fn main() -> Result<()> {
     let current_file = cli.current_file.as_deref();
 
     match cli.command {
-        Command::Prompt { text } => {
+        // No subcommand: drop straight into the interactive chat TUI,
+        // the way `claude` does when invoked bare.
+        None | Some(Command::Tui) => {
+            actions::tui::handle(session_id, project_path, current_file).await
+        }
+        Some(Command::Prompt { text }) => {
             actions::prompt::handle(&text, session_id, project_path, current_file).await
         }
-        Command::Generate {
+        Some(Command::Generate {
             lang,
             description,
             format,
-        } => {
+        }) => {
             actions::generate::handle(
                 &lang,
                 &description,
@@ -37,13 +42,12 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Run { code, lang } => {
+        Some(Command::Run { code, lang }) => {
             let exit = actions::run::handle(code.as_deref(), lang.as_deref())?;
             std::process::exit(exit);
         }
-        Command::Session { action } => actions::session::handle(action).await,
-        Command::Models => actions::models::handle().await,
-        Command::Config { action } => actions::config_cmd::handle(action),
-        Command::Tui => actions::tui::handle(session_id, project_path, current_file).await,
+        Some(Command::Session { action }) => actions::session::handle(action).await,
+        Some(Command::Models) => actions::models::handle().await,
+        Some(Command::Config { action }) => actions::config_cmd::handle(action),
     }
 }

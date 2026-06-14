@@ -41,10 +41,9 @@ working Docker daemon.
 ## Setup: API token
 
 1. Open the Odysseus web UI (default `http://localhost:7000`).
-2. Go to Settings -> Integrations and scroll to the "API Tokens" card
-   (admin only; if it is missing, enable the "API Tokens" toggle under
-   Settings -> System). Name the token, leave scopes blank (defaults to
-   `chat`), and copy the `ody_...` value -- it is shown only once.
+2. Go to Settings -> Integrations and scroll past the integrations list to
+   the "API Tokens" card (admin only). Name the token, leave scopes blank
+   (defaults to `chat`), and copy the `ody_...` value -- it is shown only once.
 3. Tell odysseus-code about it:
 
 ```sh
@@ -76,6 +75,9 @@ odysseus-code config set model qwen3
 ## Usage
 
 ```sh
+# Bare invocation opens the full-screen interactive chat (same as `tui`)
+odysseus-code
+
 # One-shot prompt (lazily creates/reuses a server session named "odysseus-code")
 odysseus-code prompt "How do I reverse a linked list in Rust?"
 
@@ -101,7 +103,7 @@ odysseus-code session end my-feature
 # What can the backend serve?
 odysseus-code models
 
-# Full-screen interactive chat (Esc or Ctrl-C quits)
+# Full-screen interactive chat (Esc or Ctrl-C quits); also the default with no args
 odysseus-code tui
 ```
 
