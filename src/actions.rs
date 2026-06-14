@@ -23,21 +23,34 @@ pub async fn resolve_session(
     store: &mut SessionStore,
     explicit: Option<&str>,
 ) -> Result<String> {
+    Ok(resolve_session_named(client, cfg, store, explicit).await?.1)
+}
+
+/// Like [`resolve_session`], but also returns the friendly session name the
+/// resolved ID is stored under (when there is one). A raw server-ID launch has
+/// no friendly name, so the name is `None`. Callers that may later remap the
+/// session (e.g. the TUI's `/clear`) need the name to update the store.
+pub async fn resolve_session_named(
+    client: &OdysseusClient,
+    cfg: &Config,
+    store: &mut SessionStore,
+    explicit: Option<&str>,
+) -> Result<(Option<String>, String)> {
     if let Some(wanted) = explicit {
         if let Some(id) = store.server_id(wanted) {
-            return Ok(id.to_string());
+            return Ok((Some(wanted.to_string()), id.to_string()));
         }
         // Not a known local name — assume it's a raw server session ID.
-        return Ok(wanted.to_string());
+        return Ok((None, wanted.to_string()));
     }
 
-    if let Some((_, id)) = store.active() {
-        return Ok(id.to_string());
+    if let Some((name, id)) = store.active() {
+        return Ok((Some(name.to_string()), id.to_string()));
     }
 
     // Cached default from a previous run?
     if let Some(id) = store.server_id(DEFAULT_SESSION_NAME) {
-        return Ok(id.to_string());
+        return Ok((Some(DEFAULT_SESSION_NAME.to_string()), id.to_string()));
     }
 
     // Reuse a server session named "odysseus-code" if one exists…
@@ -53,7 +66,7 @@ pub async fn resolve_session(
     };
     store.insert(DEFAULT_SESSION_NAME, &session.id);
     store.save()?;
-    Ok(session.id)
+    Ok((Some(DEFAULT_SESSION_NAME.to_string()), session.id))
 }
 
 /// Create a server session, resolving endpoint/model from config when set,
