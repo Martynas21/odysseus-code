@@ -143,17 +143,21 @@ async fn run(
     mut store: SessionStore,
     session_name: Option<String>,
 ) -> Result<()> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Result<String, ClientError>>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<ChatUpdate>();
 
     loop {
         terminal.draw(|frame| draw(frame, app))?;
-
-        // Replies arrive from the background send task; never block the draw loop.
-        if let Ok(reply) = rx.try_recv() {
-            app.thinking = false;
-            match reply {
-                Ok(text) => app.push(Role::Assistant, text),
-                Err(err) => app.push(Role::Error, err.to_string()),
+        while let Ok(update) = rx.try_recv() {
+            match update {
+                ChatUpdate::Notice(note) => app.push(Role::System, note),
+                ChatUpdate::Reply(text) => {
+                    app.thinking = false;
+                    app.push(Role::Assistant, text);
+                }
+                ChatUpdate::Failed(msg) => {
+                    app.thinking = false;
+                    app.push(Role::Error, msg);
+                }
             }
         }
 
@@ -200,7 +204,15 @@ async fn run(
                 let message = ctx.wrap(&text);
                 let tx = tx.clone();
                 tokio::spawn(async move {
-                    let _ = tx.send(client.chat(&session, &message).await);
+                    let notify = tx.clone();
+                    let result = chat_with_retries(&client, &session, &message, |note| {
+                        let _ = notify.send(ChatUpdate::Notice(note));
+                    })
+                    .await;
+                    let _ = tx.send(match result {
+                        Ok(text) => ChatUpdate::Reply(text),
+                        Err(msg) => ChatUpdate::Failed(msg),
+                    });
                 });
             }
             // Tab and Ctrl+I (which most terminals deliver as Tab) reveal the
@@ -250,6 +262,64 @@ async fn start_new_session(
     app.messages.clear();
     app.push(Role::System, "Started a new session.".into());
     Ok(())
+}
+
+/// A message from the background chat task to the draw loop. Retries stream
+/// `Notice`s ahead of the single terminal `Reply` or `Failed`.
+enum ChatUpdate {
+    Notice(String),
+    Reply(String),
+    Failed(String),
+}
+
+/// Initial attempt plus this many retries before giving up.
+const MAX_RETRIES: u32 = 5;
+
+/// Whether a chat failure is worth retrying. Transient problems (network, rate
+/// limiting, malformed bodies, server-side 5xx) are; permanent ones (auth, and
+/// other 4xx client errors) are not — retrying them only delays the real error.
+fn is_retryable(err: &ClientError) -> bool {
+    match err {
+        ClientError::Network { .. } | ClientError::RateLimited | ClientError::BadResponse(_) => {
+            true
+        }
+        ClientError::Http { status, .. } => *status >= 500,
+        ClientError::Unauthorized => false,
+    }
+}
+
+/// Send a chat message, retrying empty replies and transient failures up to
+/// [`MAX_RETRIES`] times. `notice` is called with a human-readable progress
+/// line before each retry. Returns the first non-empty reply, or an error
+/// string once retries are exhausted or a permanent failure occurs.
+async fn chat_with_retries(
+    client: &OdysseusClient,
+    session: &str,
+    message: &str,
+    mut notice: impl FnMut(String),
+) -> Result<String, String> {
+    for retry in 0..=MAX_RETRIES {
+        let outcome = client.chat(session, message).await;
+        match &outcome {
+            // A non-empty reply is the only success.
+            Ok(text) if !text.trim().is_empty() => return Ok(text.clone()),
+            // A permanent failure won't fix itself — surface it now.
+            Err(err) if !is_retryable(err) => return Err(err.to_string()),
+            _ => {}
+        }
+        let reason = match &outcome {
+            Ok(_) => "the model returned an empty reply".to_string(),
+            Err(err) => err.to_string(),
+        };
+        if retry == MAX_RETRIES {
+            return Err(format!("{reason} (gave up after {MAX_RETRIES} retries)"));
+        }
+        notice(format!(
+            "{reason} — retrying ({}/{MAX_RETRIES})…",
+            retry + 1
+        ));
+    }
+    unreachable!("loop returns on the final attempt")
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
@@ -1079,5 +1149,117 @@ mod tests {
             resolve_model_name(&client, &cfg, "missing").await,
             "unknown"
         );
+    }
+
+    #[tokio::test]
+    async fn chat_with_retries_retries_empty_reply_then_succeeds() {
+        let mut server = mockito::Server::new_async().await;
+        let empty = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body(r#"{"response":"  "}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body(r#"{"response":"hello"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let client = crate::client::OdysseusClient::new(server.url(), "tok");
+
+        let mut notices = Vec::new();
+        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
+
+        assert_eq!(reply, Ok("hello".to_string()));
+        assert_eq!(notices.len(), 1);
+        assert!(
+            notices[0].contains("empty") && notices[0].contains("(1/5)"),
+            "unexpected notice: {:?}",
+            notices[0]
+        );
+        empty.assert_async().await;
+        ok.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn chat_with_retries_retries_transient_server_error() {
+        let mut server = mockito::Server::new_async().await;
+        let boom = server
+            .mock("POST", "/api/chat")
+            .with_status(500)
+            .with_body("boom")
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body(r#"{"response":"ok"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let client = crate::client::OdysseusClient::new(server.url(), "tok");
+
+        let mut notices = Vec::new();
+        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
+
+        assert_eq!(reply, Ok("ok".to_string()));
+        assert_eq!(notices.len(), 1);
+        assert!(
+            notices[0].contains("500") && notices[0].contains("(1/5)"),
+            "unexpected notice: {:?}",
+            notices[0]
+        );
+        boom.assert_async().await;
+        ok.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn chat_with_retries_does_not_retry_permanent_failure() {
+        let mut server = mockito::Server::new_async().await;
+        // expect(1): a 401 must be tried exactly once, never retried.
+        let unauthorized = server
+            .mock("POST", "/api/chat")
+            .with_status(401)
+            .with_body(r#"{"error":"Not authenticated"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let client = crate::client::OdysseusClient::new(server.url(), "tok");
+
+        let mut notices = Vec::new();
+        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
+
+        assert!(reply.is_err());
+        assert!(notices.is_empty(), "permanent failure should not retry");
+        unauthorized.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn chat_with_retries_gives_up_after_max_retries() {
+        let mut server = mockito::Server::new_async().await;
+        // Initial attempt plus five retries: six identical empty replies.
+        let empty = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body(r#"{"response":""}"#)
+            .expect(6)
+            .create_async()
+            .await;
+        let client = crate::client::OdysseusClient::new(server.url(), "tok");
+
+        let mut notices = Vec::new();
+        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
+
+        let err = reply.unwrap_err();
+        assert!(
+            err.contains("gave up after 5 retries"),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(notices.len(), 5);
+        empty.assert_async().await;
     }
 }
