@@ -1,6 +1,6 @@
 # odysseus-code
 
-A command-line harness that turns a self-hosted [Odysseus](http://localhost:7000)
+A command-line harness that turns a self-hosted [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus)
 AI workspace into a local coding assistant. Odysseus itself is web-only;
 odysseus-code wraps its REST API in a full-screen terminal chat so you can
 pair with it on code without leaving the terminal.
