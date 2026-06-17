@@ -5,16 +5,21 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+async-trait = "0.1.83"
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.29.0"
 dirs = "6.0.0"
+futures-util = "0.3.31"
+globset = "0.4.15"
 ratatui = "0.30.1"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "form"] }
+regex = "1.11.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "form", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_yaml = "0.9.34"
 thiserror = "2.0.18"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "time"] }
+walkdir = "2.5.0"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
