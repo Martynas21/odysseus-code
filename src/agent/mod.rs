@@ -45,29 +45,22 @@ pub enum ApprovalDecision {
     Deny,
 }
 
-// Several event `id`/`name` fields are read by the Phase 6 approval UI and the
-// Phase 7 tool-display polish (Tasks 6.1/7.1); remove this allow once consumed.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     AssistantTextDelta(String),
     AssistantTextDone,
     ToolCallRequested {
-        id: String,
         name: String,
         args: String,
     },
     ApprovalRequired {
-        id: String,
         name: String,
         args: String,
     },
     ToolStarted {
-        id: String,
         name: String,
     },
     ToolFinished {
-        id: String,
         name: String,
         output: String,
         ok: bool,
@@ -197,7 +190,6 @@ pub async fn run_agent(
 
         for call in calls {
             let _ = ev_tx.send(AgentEvent::ToolCallRequested {
-                id: call.id.clone(),
                 name: call.name.clone(),
                 args: call.arguments.clone(),
             });
@@ -208,7 +200,6 @@ pub async fn run_agent(
                 (Safety::Mutating, ApprovalPolicy::ReadOnly) => false,
                 (Safety::Mutating, ApprovalPolicy::Prompt) => {
                     let _ = ev_tx.send(AgentEvent::ApprovalRequired {
-                        id: call.id.clone(),
                         name: call.name.clone(),
                         args: call.arguments.clone(),
                     });
@@ -229,7 +220,6 @@ pub async fn run_agent(
                     "The user denied this tool call.",
                 ));
                 let _ = ev_tx.send(AgentEvent::ToolFinished {
-                    id: call.id.clone(),
                     name: call.name.clone(),
                     output: "denied".into(),
                     ok: false,
@@ -238,7 +228,6 @@ pub async fn run_agent(
             }
 
             let _ = ev_tx.send(AgentEvent::ToolStarted {
-                id: call.id.clone(),
                 name: call.name.clone(),
             });
             // Broken JSON args fall through to `Null`; the tool's own arg
@@ -259,7 +248,6 @@ pub async fn run_agent(
             };
             history.push(ChatMessage::tool_result(&call.id, &output));
             let _ = ev_tx.send(AgentEvent::ToolFinished {
-                id: call.id.clone(),
                 name: call.name.clone(),
                 output,
                 ok,

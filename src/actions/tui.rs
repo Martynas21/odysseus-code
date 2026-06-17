@@ -189,10 +189,10 @@ async fn run(
             match ev {
                 AgentEvent::AssistantTextDelta(d) => app.push_delta(&d),
                 AgentEvent::AssistantTextDone => app.end_assistant(),
-                AgentEvent::ToolCallRequested { name, args, .. } => {
+                AgentEvent::ToolCallRequested { name, args } => {
                     app.push(Role::Tool, format!("{name}: {}", summarize_args(&args)));
                 }
-                AgentEvent::ApprovalRequired { name, args, .. } => {
+                AgentEvent::ApprovalRequired { name, args } => {
                     let pending = PendingApproval { name, args };
                     app.push(
                         Role::System,
@@ -204,10 +204,12 @@ async fn run(
                     );
                     app.pending_approval = Some(pending);
                 }
-                AgentEvent::ToolStarted { .. } => {}
-                AgentEvent::ToolFinished { output, ok, .. } => {
+                AgentEvent::ToolStarted { name } => {
+                    app.push(Role::Tool, format!("running {name}…"));
+                }
+                AgentEvent::ToolFinished { name, output, ok } => {
                     let role = if ok { Role::Tool } else { Role::Error };
-                    app.push(role, output);
+                    app.push(role, format!("{name}: {output}"));
                 }
                 AgentEvent::Error(msg) => {
                     app.thinking = false;
@@ -640,13 +642,20 @@ fn message_lines(messages: &[DisplayMessage], width: usize, thinking: bool) -> V
             lines.push(Line::default());
             continue;
         }
-        // Tool calls and results are unlabelled, arrowed yellow asides.
+        // Tool activity is unlabelled: the first row is a bright, arrow-prefixed
+        // call line; any wrapped continuation (tool output) is dimmed so the
+        // call stands out from its results.
         if message.role == Role::Tool {
-            for row in wrap_text(&message.content, width) {
-                lines.push(Line::from(Span::styled(
-                    format!("→ {row}"),
-                    Style::new().fg(Color::Yellow),
-                )));
+            for (i, row) in wrap_text(&message.content, width).into_iter().enumerate() {
+                let (text, style) = if i == 0 {
+                    (
+                        format!("→ {row}"),
+                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    (row, Style::new().fg(Color::DarkGray))
+                };
+                lines.push(Line::from(Span::styled(text, style)));
             }
             lines.push(Line::default());
             continue;
@@ -735,6 +744,44 @@ mod tests {
             lines
                 .iter()
                 .any(|l| l.to_string().contains("→ shell: ls -la"))
+        );
+    }
+
+    #[test]
+    fn message_lines_styles_tool_and_error_distinctly() {
+        let messages = vec![
+            DisplayMessage {
+                role: Role::Tool,
+                content: "shell: echo hi".into(),
+            },
+            DisplayMessage {
+                role: Role::Error,
+                content: "denied shell".into(),
+            },
+        ];
+        let lines = message_lines(&messages, 80, false);
+        // Tool lines are yellow and arrow-prefixed.
+        let tool_line = lines
+            .iter()
+            .find(|l| l.to_string().contains("echo hi"))
+            .unwrap();
+        assert!(tool_line.to_string().starts_with('→'));
+        assert!(
+            tool_line
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Yellow)),
+            "tool call line should be yellow"
+        );
+        // Error keeps its red "Error:" label.
+        assert!(lines.iter().any(|l| l.to_string() == "Error:"));
+        let error_label = lines.iter().find(|l| l.to_string() == "Error:").unwrap();
+        assert!(
+            error_label
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Red)),
+            "error label should be red"
         );
     }
 
