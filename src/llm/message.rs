@@ -46,6 +46,9 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self::plain(Role::User, content)
     }
+    // The agent loop builds assistant turns inline (to attach tool_calls); this
+    // plain constructor rounds out the set and is kept for callers/tests.
+    #[allow(dead_code)]
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::plain(Role::Assistant, content)
     }
