@@ -42,13 +42,32 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
     pub temperature: f32,
     pub max_tokens: u32,
+    /// Whether to let a reasoning model think. When false, ask the server to
+    /// skip the chain-of-thought (qwen3's `enable_thinking` soft-switch).
+    pub think: bool,
 }
 
 impl ChatRequest {
     pub fn to_body(&self) -> Value {
+        let mut messages: Vec<Value> = self.messages.iter().map(ChatMessage::to_wire).collect();
+        if !self.think {
+            // Inject qwen3's `/no_think` soft-switch into the prompt. This is the
+            // robust path for servers (e.g. LM Studio) that ignore the
+            // `chat_template_kwargs` param set below. Apply to the latest user
+            // message, falling back to the system message.
+            let idx = messages
+                .iter()
+                .rposition(|m| m["role"] == "user")
+                .or_else(|| messages.iter().position(|m| m["role"] == "system"));
+            if let Some(i) = idx
+                && let Some(content) = messages[i]["content"].as_str()
+            {
+                messages[i]["content"] = format!("{content} /no_think").into();
+            }
+        }
         let mut body = json!({
             "model": self.model,
-            "messages": self.messages.iter().map(ChatMessage::to_wire).collect::<Vec<_>>(),
+            "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "stream": true,
@@ -58,6 +77,11 @@ impl ChatRequest {
             body["tools"] = Value::Array(self.tools.iter().map(ToolDef::to_wire).collect());
             body["tool_choice"] = "auto".into();
         }
+        if !self.think {
+            // Belt-and-suspenders: also send the documented param for servers
+            // that honor it (vLLM, etc.).
+            body["chat_template_kwargs"] = json!({"enable_thinking": false});
+        }
         body
     }
 }
@@ -66,6 +90,8 @@ impl ChatRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
     TextDelta(String),
+    /// A chunk of the model's chain-of-thought (reasoning models only).
+    ReasoningDelta(String),
     ToolCallDelta {
         index: usize,
         id: Option<String>,
@@ -119,6 +145,7 @@ mod tests {
             }],
             temperature: 0.2,
             max_tokens: 4096,
+            think: true,
         };
         let body = req.to_body();
         assert_eq!(body["model"], "qwen3");
@@ -127,6 +154,8 @@ mod tests {
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["messages"][0]["content"], "hi");
         assert_eq!(body["tools"][0]["function"]["name"], "shell");
+        // Thinking on → no enable_thinking override sent.
+        assert!(body.get("chat_template_kwargs").is_none());
     }
 
     #[test]
@@ -137,9 +166,28 @@ mod tests {
             tools: vec![],
             temperature: 0.0,
             max_tokens: 1,
+            think: true,
         };
         let body = req.to_body();
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn no_think_disables_thinking_via_param_and_prompt_token() {
+        let req = ChatRequest {
+            model: "m".into(),
+            messages: vec![ChatMessage::system("sys"), ChatMessage::user("hi")],
+            tools: vec![],
+            temperature: 0.0,
+            max_tokens: 1,
+            think: false,
+        };
+        let body = req.to_body();
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        // The `/no_think` soft-switch is appended to the latest user message.
+        assert_eq!(body["messages"][1]["content"], "hi /no_think");
+        // The system message is untouched.
+        assert_eq!(body["messages"][0]["content"], "sys");
     }
 }

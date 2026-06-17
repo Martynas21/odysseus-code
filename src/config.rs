@@ -32,11 +32,11 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            base_url: "http://localhost:7000".into(),
+            base_url: "http://localhost:1234".into(),
             api_key: String::new(),
             model: String::new(),
             temperature: 0.2,
-            max_tokens: 4096,
+            max_tokens: 32768,
             tool_timeout_secs: 60,
             approval_policy: "prompt".into(),
             default_language: "rust".into(),
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(cfg, Config::default());
         assert!(path.exists(), "defaults should be persisted on first load");
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("base_url: http://localhost:7000"));
+        assert!(raw.contains("base_url: http://localhost:1234"));
         assert!(raw.contains("default_language: rust"));
     }
 
@@ -255,9 +255,9 @@ mod tests {
     #[test]
     fn agent_defaults_are_sane() {
         let cfg = Config::default();
-        assert_eq!(cfg.base_url, "http://localhost:7000");
+        assert_eq!(cfg.base_url, "http://localhost:1234");
         assert_eq!(cfg.temperature, 0.2);
-        assert_eq!(cfg.max_tokens, 4096);
+        assert_eq!(cfg.max_tokens, 32768);
         assert_eq!(cfg.tool_timeout_secs, 60);
         assert_eq!(cfg.approval_policy, "prompt");
     }

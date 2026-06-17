@@ -68,6 +68,11 @@ struct App {
     appr_tx: Option<mpsc::UnboundedSender<ApprovalDecision>>,
     /// The mutating tool call currently awaiting a y/n/a keypress, if any.
     pending_approval: Option<PendingApproval>,
+    /// Live chain-of-thought for the in-flight turn, shown dimmed and cleared
+    /// ("collapsed") once the real answer streams or the turn ends.
+    reasoning: String,
+    /// Whether the next request lets the model think. Toggled with Ctrl+T.
+    think: bool,
     /// Start time, used for the steady, mode-independent bird wing-beat.
     started: Instant,
     /// Accumulated drift phase for the scrolling sky and waves. Advanced each
@@ -93,6 +98,8 @@ impl App {
             streaming_idx: None,
             appr_tx: None,
             pending_approval: None,
+            reasoning: String::new(),
+            think: true,
             started: Instant::now(),
             anim_phase: 0.0,
             last_tick: Instant::now(),
@@ -187,9 +194,19 @@ async fn run(
         terminal.draw(|frame| draw(frame, app))?;
         while let Ok(ev) = ev_rx.try_recv() {
             match ev {
-                AgentEvent::AssistantTextDelta(d) => app.push_delta(&d),
+                AgentEvent::AssistantTextDelta(d) => {
+                    // The answer is starting: collapse the live thinking block.
+                    app.reasoning.clear();
+                    app.push_delta(&d);
+                }
+                AgentEvent::ReasoningDelta(d) => {
+                    app.reasoning.push_str(&d);
+                    app.scroll_from_bottom = 0;
+                }
                 AgentEvent::AssistantTextDone => app.end_assistant(),
                 AgentEvent::ToolCallRequested { name, args } => {
+                    // A tool call also ends the thinking phase for this step.
+                    app.reasoning.clear();
                     app.push(Role::Tool, format!("{name}: {}", summarize_args(&args)));
                 }
                 AgentEvent::ApprovalRequired { name, args } => {
@@ -214,6 +231,7 @@ async fn run(
                 AgentEvent::Error(msg) => {
                     app.thinking = false;
                     app.end_assistant();
+                    app.reasoning.clear();
                     // If the turn aborted mid-approval, release the keyboard.
                     app.pending_approval = None;
                     app.push(Role::Error, msg);
@@ -221,11 +239,13 @@ async fn run(
                 AgentEvent::Done => {
                     app.thinking = false;
                     app.end_assistant();
+                    app.reasoning.clear();
                 }
                 AgentEvent::TurnComplete(turns) => {
                     app.history.extend(turns);
                     app.thinking = false;
                     app.end_assistant();
+                    app.reasoning.clear();
                     // The turn is over: drop its approval sender and any stale
                     // prompt (re-armed on the next turn).
                     app.appr_tx = None;
@@ -297,6 +317,8 @@ async fn run(
                 let policy = ApprovalPolicy::from_str(&cfg.approval_policy);
                 let agent_cfg = cfg.clone();
                 let cwd = cwd.clone();
+                // Capture the thinking toggle for this request.
+                let think = app.think;
                 tokio::spawn(async move {
                     let new_turns = agent::run_agent(
                         provider,
@@ -307,6 +329,7 @@ async fn run(
                         &agent_cfg,
                         &cwd,
                         policy,
+                        think,
                     )
                     .await;
                     let _ = ev_tx.send(AgentEvent::TurnComplete(new_turns));
@@ -317,6 +340,10 @@ async fn run(
             KeyCode::Tab => app.show_details = !app.show_details,
             KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.show_details = !app.show_details;
+            }
+            // Ctrl+T toggles whether the next request lets the model think.
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.think = !app.think;
             }
             KeyCode::Backspace => {
                 app.input.pop();
@@ -349,6 +376,23 @@ fn summarize_args(args: &str) -> String {
     }
 }
 
+/// Render the in-flight chain-of-thought as a dimmed-italic block headed by
+/// "thinking…", capped to the last [`REASONING_TAIL_ROWS`] rows so a long think
+/// can't swamp the transcript.
+fn reasoning_lines(reasoning: &str, width: usize) -> Vec<Line<'static>> {
+    const REASONING_TAIL_ROWS: usize = 12;
+    let style = Style::new()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
+    let mut lines = vec![Line::from(Span::styled("thinking…", style))];
+    let rows = wrap_text(reasoning, width);
+    let start = rows.len().saturating_sub(REASONING_TAIL_ROWS);
+    for row in &rows[start..] {
+        lines.push(Line::from(Span::styled(row.clone(), style)));
+    }
+    lines
+}
+
 fn draw(frame: &mut Frame, app: &mut App) {
     let [msg_area, ship_area, input_area, status_area] = Layout::vertical([
         Constraint::Min(1),
@@ -361,7 +405,12 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // Transcript pane. Text is pre-wrapped so the scroll offset is exact.
     let width = msg_area.width.saturating_sub(2).max(1) as usize;
     let viewport = msg_area.height.saturating_sub(2) as usize;
-    let lines = message_lines(&app.messages, width, app.thinking);
+    let mut lines = message_lines(&app.messages, width, app.thinking);
+    // Live chain-of-thought: a transient dimmed block below the transcript that
+    // collapses once the answer streams (see the event loop).
+    if !app.reasoning.is_empty() {
+        lines.extend(reasoning_lines(&app.reasoning, width));
+    }
     app.scroll_from_bottom = app
         .scroll_from_bottom
         .min(lines.len().saturating_sub(viewport));
@@ -406,6 +455,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
 fn status_line(app: &App) -> String {
     // Collapsed: just the model. Tab/Ctrl+I expands the connection details.
     let mut status = format!(" {}", app.model);
+    if !app.think {
+        // Only surfaced when off, keeping the default chrome minimal.
+        status.push_str(" | no-think");
+    }
     if app.show_details {
         status.push_str(&format!(" | {}", app.endpoint));
     }
@@ -1103,5 +1156,34 @@ mod tests {
         assert!(!line.contains("thinking"));
         app.thinking = true;
         assert!(status_line(&app).contains("thinking…"));
+    }
+
+    #[test]
+    fn status_line_shows_no_think_only_when_disabled() {
+        let cfg = Config::default();
+        let mut app = App::new(&cfg, "qwen3".into());
+        // Default (think on) shows no marker.
+        assert!(!status_line(&app).contains("no-think"));
+        app.think = false;
+        assert!(status_line(&app).contains("no-think"));
+    }
+
+    #[test]
+    fn reasoning_lines_render_capped_thinking_block() {
+        let reasoning: String = (0..50)
+            .map(|i| format!("thought line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = reasoning_lines(&reasoning, 80);
+        assert_eq!(lines[0].to_string(), "thinking…");
+        // Header + at most the tail rows (12), never the full 50.
+        assert!(lines.len() <= 13);
+        assert!(
+            lines
+                .last()
+                .unwrap()
+                .to_string()
+                .contains("thought line 49")
+        );
     }
 }

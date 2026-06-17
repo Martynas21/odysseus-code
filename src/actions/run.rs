@@ -26,6 +26,7 @@ use crate::tools::ToolRegistry;
 pub async fn handle(
     prompt: String,
     yes: bool,
+    no_think: bool,
     project_path: Option<&Path>,
     current_file: Option<&Path>,
     model_override: Option<&str>,
@@ -62,10 +63,11 @@ pub async fn handle(
     // satisfy the signature; nothing is ever sent on it.
     let (_appr_tx, appr_rx) = mpsc::unbounded_channel();
 
+    let think = !no_think;
     // Drive the agent on a task so we can drain its events as they arrive.
     let agent_task = tokio::spawn(async move {
         agent::run_agent(
-            provider, registry, history, ev_tx, appr_rx, &cfg, &cwd, policy,
+            provider, registry, history, ev_tx, appr_rx, &cfg, &cwd, policy, think,
         )
         .await
     });
@@ -79,6 +81,11 @@ pub async fn handle(
                 print!("{d}");
                 let _ = stdout.flush();
                 wrote_any = true;
+            }
+            // Reasoning goes to stderr so stdout stays the clean answer.
+            AgentEvent::ReasoningDelta(d) => {
+                eprint!("{d}");
+                let _ = std::io::stderr().flush();
             }
             AgentEvent::AssistantTextDone => {}
             AgentEvent::ToolCallRequested { name, args } => {

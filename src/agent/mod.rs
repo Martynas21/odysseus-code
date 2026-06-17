@@ -48,6 +48,8 @@ pub enum ApprovalDecision {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     AssistantTextDelta(String),
+    /// A chunk of the model's chain-of-thought (display-only; not kept in history).
+    ReasoningDelta(String),
     AssistantTextDone,
     ToolCallRequested {
         name: String,
@@ -126,6 +128,7 @@ pub async fn run_agent(
     cfg: &Config,
     cwd: &Path,
     mut policy: ApprovalPolicy,
+    think: bool,
 ) -> Vec<ChatMessage> {
     let base_len = history.len();
 
@@ -136,6 +139,7 @@ pub async fn run_agent(
             tools: registry.defs(),
             temperature: cfg.temperature,
             max_tokens: cfg.max_tokens,
+            think,
         };
 
         let mut stream = match provider.chat_stream(req).await {
@@ -153,6 +157,11 @@ pub async fn run_agent(
                 Ok(StreamEvent::TextDelta(d)) => {
                     text.push_str(&d);
                     let _ = ev_tx.send(AgentEvent::AssistantTextDelta(d));
+                }
+                // Reasoning is display-only — surfaced to the UI, never added to
+                // `text`/history or sent back to the model.
+                Ok(StreamEvent::ReasoningDelta(d)) => {
+                    let _ = ev_tx.send(AgentEvent::ReasoningDelta(d));
                 }
                 Ok(StreamEvent::ToolCallDelta {
                     index,
@@ -362,6 +371,7 @@ mod tests {
             &cfg(),
             Path::new("."),
             ApprovalPolicy::Auto,
+            true,
         )
         .await;
 
@@ -378,6 +388,42 @@ mod tests {
         assert!(saw_done);
         assert_eq!(new.last().unwrap().role, Role::Assistant);
         assert_eq!(new.last().unwrap().content, "Hi there");
+    }
+
+    #[tokio::test]
+    async fn reasoning_is_surfaced_but_excluded_from_history() {
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            StreamEvent::ReasoningDelta("thinking…".into()),
+            StreamEvent::TextDelta("answer".into()),
+            StreamEvent::Done,
+        ]]));
+        let registry = Arc::new(ToolRegistry::default_set());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_atx, arx) = mpsc::unbounded_channel();
+        let history = vec![ChatMessage::user("q")];
+
+        let new = run_agent(
+            provider,
+            registry,
+            history,
+            tx,
+            arx,
+            &cfg(),
+            Path::new("."),
+            ApprovalPolicy::Auto,
+            true,
+        )
+        .await;
+
+        let mut reasoning = String::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::ReasoningDelta(d) = ev {
+                reasoning.push_str(&d);
+            }
+        }
+        assert_eq!(reasoning, "thinking…");
+        // The assistant turn keeps only the real answer, never the reasoning.
+        assert_eq!(new.last().unwrap().content, "answer");
     }
 
     #[tokio::test]
@@ -410,6 +456,7 @@ mod tests {
             &cfg(),
             dir.path(),
             ApprovalPolicy::Prompt,
+            true,
         )
         .await;
 
@@ -457,6 +504,7 @@ mod tests {
             &cfg(),
             dir.path(),
             ApprovalPolicy::Prompt,
+            true,
         )
         .await;
 
@@ -499,6 +547,7 @@ mod tests {
             &cfg(),
             dir.path(),
             ApprovalPolicy::Auto,
+            true,
         )
         .await;
         let mut saw_error = false;

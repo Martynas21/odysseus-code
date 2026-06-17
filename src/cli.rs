@@ -42,6 +42,9 @@ pub enum Command {
         /// Auto-approve mutating tools (otherwise they are auto-denied)
         #[arg(long)]
         yes: bool,
+        /// Skip the model's chain-of-thought for a faster, direct answer
+        #[arg(long)]
+        no_think: bool,
     },
 }
 

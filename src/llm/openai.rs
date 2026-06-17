@@ -29,6 +29,10 @@ struct ChunkChoice {
 struct Delta {
     #[serde(default)]
     content: Option<String>,
+    /// Chain-of-thought from reasoning models. LM Studio uses
+    /// `reasoning_content`; some servers use `reasoning`.
+    #[serde(default, alias = "reasoning")]
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<ToolCallChunk>>,
 }
@@ -64,6 +68,11 @@ pub(crate) fn parse_chunk(data: &str) -> Result<Vec<StreamEvent>, ProviderError>
         .map_err(|e| ProviderError::BadStream(format!("{e} — payload: {data}")))?;
     let mut events = Vec::new();
     for choice in chunk.choices {
+        if let Some(reasoning) = choice.delta.reasoning_content
+            && !reasoning.is_empty()
+        {
+            events.push(StreamEvent::ReasoningDelta(reasoning));
+        }
         if let Some(text) = choice.delta.content
             && !text.is_empty()
         {
@@ -232,7 +241,14 @@ mod tests {
             tools: vec![],
             temperature: 0.0,
             max_tokens: 16,
+            think: true,
         }
+    }
+
+    #[test]
+    fn parse_chunk_reasoning_delta() {
+        let events = parse_chunk(r#"{"choices":[{"delta":{"reasoning_content":"Hmm"}}]}"#).unwrap();
+        assert_eq!(events, vec![StreamEvent::ReasoningDelta("Hmm".into())]);
     }
 
     #[tokio::test]
