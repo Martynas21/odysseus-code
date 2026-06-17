@@ -76,7 +76,7 @@ impl App {
             .collect();
         Self {
             session,
-            endpoint: cfg.endpoint.clone(),
+            endpoint: cfg.base_url.clone(),
             model,
             messages,
             input: String::new(),
@@ -1008,6 +1008,17 @@ mod tests {
     #[tokio::test]
     async fn start_new_session_resets_transcript_and_remaps_store() {
         let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/api/models")
+            .with_status(200)
+            .with_body(
+                r#"{"hosts":[],"items":[{"host":"custom","port":0,
+                     "url":"http://x/v1/chat/completions",
+                     "models":["qwen3"],"models_extra":[],
+                     "endpoint_id":"ep1","endpoint_name":"local llama"}]}"#,
+            )
+            .create_async()
+            .await;
         let mock = server
             .mock("POST", "/api/session")
             .with_status(200)
@@ -1016,8 +1027,7 @@ mod tests {
             .await;
 
         let cfg = Config {
-            endpoint: server.url(),
-            endpoint_id: "ep1".into(),
+            base_url: server.url(),
             model: "qwen3".into(),
             ..Config::default()
         };
@@ -1052,6 +1062,17 @@ mod tests {
     async fn start_new_session_without_name_leaves_store_untouched() {
         let mut server = mockito::Server::new_async().await;
         server
+            .mock("GET", "/api/models")
+            .with_status(200)
+            .with_body(
+                r#"{"hosts":[],"items":[{"host":"custom","port":0,
+                     "url":"http://x/v1/chat/completions",
+                     "models":["qwen3"],"models_extra":[],
+                     "endpoint_id":"ep1","endpoint_name":"local llama"}]}"#,
+            )
+            .create_async()
+            .await;
+        server
             .mock("POST", "/api/session")
             .with_status(200)
             .with_body(r#"{"id":"new-sid","name":"odysseus-code","model":"qwen3"}"#)
@@ -1059,8 +1080,7 @@ mod tests {
             .await;
 
         let cfg = Config {
-            endpoint: server.url(),
-            endpoint_id: "ep1".into(),
+            base_url: server.url(),
             model: "qwen3".into(),
             ..Config::default()
         };

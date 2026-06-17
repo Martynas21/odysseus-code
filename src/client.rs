@@ -111,13 +111,10 @@ impl OdysseusClient {
         }
     }
 
-    /// Build a client from config, rejecting a missing API token up front so
-    /// the user gets the setup hint before any network call.
+    /// Build a client from config. The API key is optional (local servers
+    /// usually need none), so no token check is performed here.
     pub fn from_config(cfg: &Config) -> Result<Self, ClientError> {
-        if cfg.api_key.trim().is_empty() || cfg.api_key == "YOUR_KEY_HERE" {
-            return Err(ClientError::Unauthorized);
-        }
-        Ok(Self::new(&cfg.endpoint, &cfg.api_key))
+        Ok(Self::new(&cfg.base_url, &cfg.api_key))
     }
 
     /// Send a chat message into an existing session. Returns the reply text.
@@ -447,16 +444,10 @@ mod tests {
     }
 
     #[test]
-    fn from_config_rejects_missing_token() {
+    fn from_config_allows_empty_token() {
+        // The API key is now optional (local servers usually need none), so an
+        // empty token must no longer be rejected up front.
         let cfg = Config::default();
-        assert!(matches!(
-            OdysseusClient::from_config(&cfg),
-            Err(ClientError::Unauthorized)
-        ));
-        let placeholder = Config {
-            api_key: "YOUR_KEY_HERE".into(),
-            ..Config::default()
-        };
-        assert!(OdysseusClient::from_config(&placeholder).is_err());
+        assert!(OdysseusClient::from_config(&cfg).is_ok());
     }
 }

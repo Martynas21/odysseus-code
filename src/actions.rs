@@ -53,38 +53,43 @@ pub async fn resolve_session_named(
 
 /// Create a server session, resolving endpoint/model from config when set,
 /// else from the first endpoint advertised by `GET /api/models`.
+// The configured endpoint id was dropped from Config in the agent pivot, so the
+// "honor configured endpoint" branch is now dead; this whole helper is removed
+// in a later phase.
+#[allow(clippy::const_is_empty)]
 pub async fn create_session(
     client: &OdysseusClient,
     cfg: &Config,
     name: &str,
 ) -> Result<crate::client::SessionInfo> {
-    let (endpoint_id, model) = if !cfg.endpoint_id.is_empty() {
+    let configured_endpoint_id = "";
+    let (endpoint_id, model) = if !configured_endpoint_id.is_empty() {
         // Honor the configured endpoint_id; never override it from /api/models.
         if !cfg.model.is_empty() {
             // Both set: fast path, no need to hit the backend.
-            (cfg.endpoint_id.clone(), cfg.model.clone())
+            (configured_endpoint_id.to_string(), cfg.model.clone())
         } else {
             // Endpoint set but model left to "first available": resolve a model
             // for THAT endpoint from /api/models without changing the endpoint.
             let endpoints = client.list_models().await?;
             let pick = endpoints
                 .iter()
-                .find(|e| e.endpoint_id == cfg.endpoint_id)
+                .find(|e| e.endpoint_id == configured_endpoint_id)
                 .with_context(|| {
                     format!(
                         "configured endpoint_id '{}' not found on the Odysseus backend; \
                          run `odysseus-code models` to see what is available",
-                        cfg.endpoint_id
+                        configured_endpoint_id
                     )
                 })?;
             let model = pick.first_model().with_context(|| {
                 format!(
                     "configured endpoint_id '{}' has no available models; \
                      run `odysseus-code models` to see what is available",
-                    cfg.endpoint_id
+                    configured_endpoint_id
                 )
             })?;
-            (cfg.endpoint_id.clone(), model)
+            (configured_endpoint_id.to_string(), model)
         }
     } else {
         let endpoints = client.list_models().await?;
