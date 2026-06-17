@@ -38,9 +38,6 @@ impl ApprovalPolicy {
     }
 }
 
-// `ApproveAlways`/`Deny` are constructed by the Phase 6 approval UI (Task 6.1);
-// remove this allow once it lands.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalDecision {
     Approve,

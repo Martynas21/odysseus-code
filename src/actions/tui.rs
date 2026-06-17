@@ -40,6 +40,13 @@ struct DisplayMessage {
     content: String,
 }
 
+/// A tool call awaiting the user's approval, captured so the confirmation line
+/// can name it once a key is pressed.
+struct PendingApproval {
+    name: String,
+    args: String,
+}
+
 struct App {
     endpoint: String,
     model: String,
@@ -59,6 +66,8 @@ struct App {
     /// Approval channel back to the running agent turn, for the (Phase 6)
     /// approval UI. Present only while a turn is in flight.
     appr_tx: Option<mpsc::UnboundedSender<ApprovalDecision>>,
+    /// The mutating tool call currently awaiting a y/n/a keypress, if any.
+    pending_approval: Option<PendingApproval>,
     /// Start time, used for the steady, mode-independent bird wing-beat.
     started: Instant,
     /// Accumulated drift phase for the scrolling sky and waves. Advanced each
@@ -83,6 +92,7 @@ impl App {
             show_details: false,
             streaming_idx: None,
             appr_tx: None,
+            pending_approval: None,
             started: Instant::now(),
             anim_phase: 0.0,
             last_tick: Instant::now(),
@@ -116,6 +126,16 @@ impl App {
 
     fn end_assistant(&mut self) {
         self.streaming_idx = None;
+    }
+
+    /// Map a keypress to an approval decision while a prompt is pending.
+    fn approval_key(&self, code: KeyCode) -> Option<ApprovalDecision> {
+        match code {
+            KeyCode::Char('y') | KeyCode::Enter => Some(ApprovalDecision::Approve),
+            KeyCode::Char('a') => Some(ApprovalDecision::ApproveAlways),
+            KeyCode::Char('n') | KeyCode::Esc => Some(ApprovalDecision::Deny),
+            _ => None,
+        }
     }
 }
 
@@ -173,16 +193,16 @@ async fn run(
                     app.push(Role::Tool, format!("{name}: {}", summarize_args(&args)));
                 }
                 AgentEvent::ApprovalRequired { name, args, .. } => {
+                    let pending = PendingApproval { name, args };
                     app.push(
                         Role::System,
-                        format!("approve {name} {}? [y/n]", summarize_args(&args)),
+                        format!(
+                            "approve {} {}? [y]es / [n]o / [a]lways",
+                            pending.name,
+                            summarize_args(&pending.args)
+                        ),
                     );
-                    // Phase 3 has no mutating tools, so this is unreachable; the
-                    // full approval UI lands in Phase 6. Auto-approve so a turn
-                    // can never wedge if one ever fires.
-                    if let Some(tx) = &app.appr_tx {
-                        let _ = tx.send(ApprovalDecision::Approve);
-                    }
+                    app.pending_approval = Some(pending);
                 }
                 AgentEvent::ToolStarted { .. } => {}
                 AgentEvent::ToolFinished { output, ok, .. } => {
@@ -192,6 +212,8 @@ async fn run(
                 AgentEvent::Error(msg) => {
                     app.thinking = false;
                     app.end_assistant();
+                    // If the turn aborted mid-approval, release the keyboard.
+                    app.pending_approval = None;
                     app.push(Role::Error, msg);
                 }
                 AgentEvent::Done => {
@@ -202,8 +224,10 @@ async fn run(
                     app.history.extend(turns);
                     app.thinking = false;
                     app.end_assistant();
-                    // The turn's approval sender is dead now; re-armed per turn.
+                    // The turn is over: drop its approval sender and any stale
+                    // prompt (re-armed on the next turn).
                     app.appr_tx = None;
+                    app.pending_approval = None;
                 }
             }
         }
@@ -216,6 +240,25 @@ async fn run(
         };
         if key.kind != KeyEventKind::Press {
             continue;
+        }
+        // While a tool call awaits approval, the prompt owns the keyboard: a
+        // y/n/a (or Enter/Esc) resolves it and every other key is swallowed, so
+        // normal typing and quit can't slip past the decision.
+        if app.pending_approval.is_some() {
+            if let Some(decision) = app.approval_key(key.code) {
+                if let Some(tx) = &app.appr_tx {
+                    let _ = tx.send(decision);
+                }
+                let verb = match decision {
+                    ApprovalDecision::Approve => "approved",
+                    ApprovalDecision::ApproveAlways => "approved (always)",
+                    ApprovalDecision::Deny => "denied",
+                };
+                if let Some(pending) = app.pending_approval.take() {
+                    app.push(Role::System, format!("{verb} {}", pending.name));
+                }
+            }
+            continue; // swallow all keys while a prompt is pending
         }
         match key.code {
             KeyCode::Esc => break,
@@ -655,6 +698,30 @@ mod tests {
         app.push_delta("lo");
         assert_eq!(app.messages.last().unwrap().content, "Hello");
         assert_eq!(app.messages.last().unwrap().role, Role::Assistant);
+    }
+
+    #[test]
+    fn approval_keys_map_to_decisions() {
+        let cfg = Config::default();
+        let app = App::new(&cfg, "m".into());
+        assert_eq!(
+            app.approval_key(KeyCode::Char('y')),
+            Some(ApprovalDecision::Approve)
+        );
+        assert_eq!(
+            app.approval_key(KeyCode::Enter),
+            Some(ApprovalDecision::Approve)
+        );
+        assert_eq!(
+            app.approval_key(KeyCode::Char('a')),
+            Some(ApprovalDecision::ApproveAlways)
+        );
+        assert_eq!(
+            app.approval_key(KeyCode::Char('n')),
+            Some(ApprovalDecision::Deny)
+        );
+        assert_eq!(app.approval_key(KeyCode::Esc), Some(ApprovalDecision::Deny));
+        assert_eq!(app.approval_key(KeyCode::Char('z')), None);
     }
 
     #[test]
