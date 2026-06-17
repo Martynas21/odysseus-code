@@ -1,10 +1,8 @@
 use std::path::Path;
 
-/// Code-centric metadata wrapped around every prompt so the model behaves
-/// like a coding companion rather than a generic chat.
-///
-/// The Odysseus chat API has no custom metadata fields, so the context is
-/// embedded as a small JSON block prefixed to the message text.
+/// Workspace facts used to build the agent's one-time system prompt (see
+/// [`PromptContext::system_prompt`]) so the model acts as a coding agent
+/// grounded in this repository rather than a generic chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptContext {
     /// Absolute path of the workspace (defaults to ".").
@@ -38,18 +36,22 @@ impl PromptContext {
         }
     }
 
-    /// Wrap a prompt with the context block.
-    pub fn wrap(&self, prompt: &str) -> String {
-        let mut meta = serde_json::Map::new();
-        meta.insert("project_path".into(), self.project_path.clone().into());
+    /// Build the one-time system message that primes the model as a local
+    /// coding agent operating in this workspace.
+    pub fn system_prompt(&self) -> String {
+        let mut s = String::new();
+        s.push_str(
+            "You are a coding agent operating directly on the user's local repository. \
+             You can call tools to read and modify files and run shell commands. \
+             Call one or more tools when useful, then wait for their results before \
+             continuing. Prefer minimal, targeted changes.\n\n",
+        );
+        s.push_str(&format!("Workspace: {}\n", self.project_path));
         if let Some(file) = &self.current_file {
-            meta.insert("current_file".into(), file.clone().into());
+            s.push_str(&format!("Current file: {file}\n"));
         }
-        meta.insert("language".into(), self.language.clone().into());
-        format!(
-            "[context] {} [/context]\n\n{prompt}",
-            serde_json::Value::Object(meta)
-        )
+        s.push_str(&format!("Primary language: {}\n", self.language));
+        s
     }
 }
 
@@ -105,14 +107,23 @@ mod tests {
     }
 
     #[test]
-    fn wrap_embeds_metadata_and_prompt() {
+    fn system_prompt_describes_workspace_and_tools() {
         let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
-        let wrapped = ctx.wrap("Explain borrowing");
-        assert!(wrapped.starts_with("[context] {"));
-        assert!(wrapped.contains("\"project_path\":\"/proj\""));
-        assert!(wrapped.contains("\"language\":\"rust\""));
-        assert!(wrapped.ends_with("\n\nExplain borrowing"));
-        // no current_file key when none given
-        assert!(!wrapped.contains("current_file"));
+        let sys = ctx.system_prompt();
+        assert!(sys.contains("/proj"));
+        assert!(sys.contains("rust"));
+        // Mentions that it can call tools and must wait for results.
+        assert!(sys.to_lowercase().contains("tool"));
+    }
+
+    #[test]
+    fn system_prompt_includes_current_file_when_present() {
+        let ctx = PromptContext::build(
+            Some(Path::new("/proj")),
+            Some(Path::new("/proj/src/main.rs")),
+            "rust",
+        );
+        let sys = ctx.system_prompt();
+        assert!(sys.contains("/proj/src/main.rs"));
     }
 }

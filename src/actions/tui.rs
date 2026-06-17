@@ -138,7 +138,8 @@ async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     client: OdysseusClient,
-    ctx: PromptContext,
+    // TODO(3.2): becomes PromptContext::system_prompt seed; unused until TUI rewrite.
+    _ctx: PromptContext,
     cfg: Config,
     mut store: SessionStore,
     session_name: Option<String>,
@@ -201,7 +202,8 @@ async fn run(
                 app.thinking = true;
                 let client = client.clone();
                 let session = app.session.clone();
-                let message = ctx.wrap(&text);
+                // TODO(3.2): PromptContext::system_prompt replaces wrap(); TUI rewritten in Task 3.2.
+                let message = text.clone();
                 let tx = tx.clone();
                 tokio::spawn(async move {
                     let notify = tx.clone();
@@ -662,13 +664,12 @@ fn scroll_offset(total_rows: usize, viewport_rows: usize, from_bottom: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::PromptContext;
 
     #[test]
     fn strip_context_prefix_removes_wrapped_metadata() {
-        let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
-        let wrapped = ctx.wrap("Explain borrowing");
-        assert_eq!(strip_context_prefix(&wrapped), "Explain borrowing");
+        // TODO(3.2): legacy wrap() format; strip_context_prefix removed in Task 3.2.
+        let wrapped = "[context] {\"project_path\":\"/proj\"} [/context]\n\nExplain borrowing";
+        assert_eq!(strip_context_prefix(wrapped), "Explain borrowing");
     }
 
     #[test]
