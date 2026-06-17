@@ -3,6 +3,7 @@ mod cli;
 mod client;
 mod config;
 mod context;
+mod llm;
 mod session;
 
 use anyhow::Result;
