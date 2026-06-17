@@ -3,15 +3,9 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::{Safety, Tool, ToolError, resolve_in_repo, truncate};
+use super::{Safety, Tool, ToolError, resolve_in_repo, str_arg, truncate};
 
 const MAX_OUTPUT: usize = 60_000;
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::BadArgs(format!("missing string '{key}'")))
-}
 
 pub struct ReadFile;
 

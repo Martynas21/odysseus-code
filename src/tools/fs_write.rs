@@ -3,13 +3,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::{Safety, Tool, ToolError, resolve_in_repo};
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::BadArgs(format!("missing string '{key}'")))
-}
+use super::{Safety, Tool, ToolError, resolve_in_repo, str_arg};
 
 pub struct WriteFile;
 

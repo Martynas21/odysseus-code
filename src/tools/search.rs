@@ -5,7 +5,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 use walkdir::WalkDir;
 
-use super::{Safety, Tool, ToolError, truncate};
+use super::{Safety, Tool, ToolError, str_arg, truncate};
 
 const MAX_OUTPUT: usize = 40_000;
 const MAX_MATCHES: usize = 500;
@@ -33,10 +33,7 @@ impl Tool for Grep {
         Safety::ReadOnly
     }
     async fn execute(&self, args: &Value, cwd: &Path, _t: u64) -> Result<String, ToolError> {
-        let pattern = args
-            .get("pattern")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::BadArgs("missing string 'pattern'".into()))?;
+        let pattern = str_arg(args, "pattern")?;
         let re = Regex::new(pattern).map_err(|e| ToolError::BadArgs(e.to_string()))?;
         let root = cwd.to_path_buf();
         // walkdir + regex are blocking; run on a blocking thread.

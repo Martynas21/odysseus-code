@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::{Safety, Tool, ToolError, truncate};
+use super::{Safety, Tool, ToolError, str_arg, truncate};
 
 const MAX_OUTPUT: usize = 40_000;
 const MAX_TIMEOUT_SECS: u64 = 600;
@@ -37,10 +37,7 @@ impl Tool for Shell {
         cwd: &Path,
         timeout_secs: u64,
     ) -> Result<String, ToolError> {
-        let cmd = args
-            .get("cmd")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::BadArgs("missing string 'cmd'".into()))?;
+        let cmd = str_arg(args, "cmd")?;
         let secs = timeout_secs.clamp(1, MAX_TIMEOUT_SECS);
         let child = tokio::process::Command::new("sh")
             .arg("-c")

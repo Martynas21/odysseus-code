@@ -132,6 +132,13 @@ pub fn resolve_in_repo(cwd: &Path, rel: &str) -> Result<PathBuf, ToolError> {
     Ok(check)
 }
 
+/// Extract a required string argument from a tool's JSON args.
+pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::BadArgs(format!("missing string '{key}'")))
+}
+
 /// Truncate tool output so a runaway command can't flood the model context.
 pub(crate) fn truncate(s: String, max: usize) -> String {
     if s.len() <= max {
