@@ -1,12 +1,14 @@
-//! Search tool. Task 4.1 stub: real metadata, `execute` is a placeholder
-//! until Task 4.4 implements `grep`.
-
 use std::path::Path;
 
 use async_trait::async_trait;
+use regex::Regex;
 use serde_json::{Value, json};
+use walkdir::WalkDir;
 
-use super::{Safety, Tool, ToolError};
+use super::{Safety, Tool, ToolError, truncate};
+
+const MAX_OUTPUT: usize = 40_000;
+const MAX_MATCHES: usize = 500;
 
 pub struct Grep;
 
@@ -19,12 +21,87 @@ impl Tool for Grep {
         "Search the workspace for lines matching a regular expression. Returns path:line: text."
     }
     fn parameters(&self) -> Value {
-        json!({ "type": "object" })
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Rust regex syntax"}
+            },
+            "required": ["pattern"]
+        })
     }
     fn safety(&self) -> Safety {
         Safety::ReadOnly
     }
-    async fn execute(&self, _args: &Value, _cwd: &Path, _t: u64) -> Result<String, ToolError> {
-        Err(ToolError::Failed("unimplemented".into()))
+    async fn execute(&self, args: &Value, cwd: &Path, _t: u64) -> Result<String, ToolError> {
+        let pattern = args
+            .get("pattern")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::BadArgs("missing string 'pattern'".into()))?;
+        let re = Regex::new(pattern).map_err(|e| ToolError::BadArgs(e.to_string()))?;
+        let root = cwd.to_path_buf();
+        // walkdir + regex are blocking; run on a blocking thread.
+        let out = tokio::task::spawn_blocking(move || {
+            let mut hits = Vec::new();
+            for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+                if hits.len() >= MAX_MATCHES {
+                    break;
+                }
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                // Skip the .git directory.
+                if entry.path().components().any(|c| c.as_os_str() == ".git") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                    continue; // skip binary / non-utf8
+                };
+                let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                for (n, line) in text.lines().enumerate() {
+                    if re.is_match(line) {
+                        hits.push(format!("{}:{}: {}", rel.display(), n + 1, line.trim_end()));
+                        if hits.len() >= MAX_MATCHES {
+                            break;
+                        }
+                    }
+                }
+            }
+            hits.join("\n")
+        })
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?;
+        if out.is_empty() {
+            Ok("no matches".into())
+        } else {
+            Ok(truncate(out, MAX_OUTPUT))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+
+    #[tokio::test]
+    async fn grep_finds_matches_with_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "fn main() {}\nlet x = 1;\n").unwrap();
+        fs::write(dir.path().join("b.rs"), "no match here\n").unwrap();
+        let out = Grep
+            .execute(&json!({"pattern": "fn \\w+"}), dir.path(), 5)
+            .await
+            .unwrap();
+        assert!(out.contains("a.rs"));
+        assert!(out.contains("fn main"));
+        assert!(!out.contains("b.rs"));
+    }
+
+    #[tokio::test]
+    async fn grep_bad_regex_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = Grep.execute(&json!({"pattern": "("}), dir.path(), 5).await;
+        assert!(err.is_err());
     }
 }
