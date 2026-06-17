@@ -99,17 +99,31 @@ pub fn resolve_in_repo(cwd: &Path, rel: &str) -> Result<PathBuf, ToolError> {
             .canonicalize()
             .map_err(|e| ToolError::Io(e.to_string()))?
     } else {
-        let parent = joined
-            .parent()
-            .ok_or_else(|| ToolError::PathEscape(rel.to_string()))?;
-        let parent = parent
-            .canonicalize()
-            .map_err(|e| ToolError::Io(format!("{}: {e}", parent.display())))?;
-        // A path with no final component (e.g. "..") is not a valid target.
-        let name = joined
-            .file_name()
-            .ok_or_else(|| ToolError::PathEscape(rel.to_string()))?;
-        parent.join(name)
+        // The target does not exist yet (a write to a new file, possibly under
+        // not-yet-created parent dirs). Canonicalize the nearest existing
+        // ancestor, then re-append the trailing components so containment can
+        // still be checked. Reject any path that resolves outside `root`.
+        let mut ancestor = joined.as_path();
+        let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+        let real = loop {
+            match ancestor.canonicalize() {
+                Ok(real) => break real,
+                Err(_) => {
+                    let name = ancestor
+                        .file_name()
+                        .ok_or_else(|| ToolError::PathEscape(rel.to_string()))?;
+                    tail.push(name);
+                    ancestor = ancestor
+                        .parent()
+                        .ok_or_else(|| ToolError::PathEscape(rel.to_string()))?;
+                }
+            }
+        };
+        let mut check = real;
+        for name in tail.into_iter().rev() {
+            check.push(name);
+        }
+        check
     };
     // `root` is already canonical, so it is the containment prefix directly.
     if !check.starts_with(&root) {
