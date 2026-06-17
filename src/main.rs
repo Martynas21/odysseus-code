@@ -24,5 +24,8 @@ async fn main() -> Result<()> {
             actions::tui::handle(project_path, current_file, model, base_url).await
         }
         Some(Command::Config { action }) => actions::config_cmd::handle(action),
+        Some(Command::Run { prompt, yes }) => {
+            actions::run::handle(prompt, yes, project_path, current_file, model, base_url).await
+        }
     }
 }

@@ -57,3 +57,8 @@ fn subcommands_have_their_own_help() {
         bin().args([sub, "--help"]).assert().success();
     }
 }
+
+#[test]
+fn run_subcommand_has_help() {
+    bin().args(["run", "--help"]).assert().success();
+}

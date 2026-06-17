@@ -35,6 +35,14 @@ pub enum Command {
     },
     /// Open the interactive agent TUI
     Tui,
+    /// Run a single agent turn non-interactively, streaming the reply to stdout
+    Run {
+        /// The prompt to send to the agent
+        prompt: String,
+        /// Auto-approve mutating tools (otherwise they are auto-denied)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
