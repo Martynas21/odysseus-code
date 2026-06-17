@@ -1,6 +1,9 @@
 pub mod message;
 pub mod sse;
 
+// `Role`/`ToolCall` are part of the crate's llm surface and are consumed by the
+// agent loop in later phases; re-exported here for that use.
+#[allow(unused_imports)]
 pub use message::{ChatMessage, Role, ToolCall};
 
 pub mod openai;
