@@ -5,19 +5,26 @@ use serde::{Deserialize, Serialize};
 
 /// Persistent configuration, stored as YAML at
 /// `~/.config/odysseus-code/config.yaml` (or `$ODYSSEUS_CODE_CONFIG_DIR/config.yaml`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    /// Base URL of the Odysseus instance.
-    pub endpoint: String,
-    /// Odysseus API token (`ody_…`), created in Settings → Integrations →
-    /// API Tokens (admin only).
+    /// Base URL of the OpenAI-compatible server (no `/v1` suffix).
+    #[serde(alias = "endpoint")]
+    pub base_url: String,
+    /// Optional bearer token. Empty = send no Authorization header (local
+    /// servers usually need none).
     pub api_key: String,
-    /// Preferred model ID for new sessions (empty = first available).
+    /// Model id to request.
     pub model: String,
-    /// Odysseus model-endpoint ID used when creating sessions (empty = resolve
-    /// from /api/models).
-    pub endpoint_id: String,
+    /// Sampling temperature.
+    pub temperature: f32,
+    /// Max tokens to generate per turn.
+    pub max_tokens: u32,
+    /// Per-tool execution timeout (seconds).
+    pub tool_timeout_secs: u64,
+    /// "prompt" (gate mutating tools), "auto" (run all), or "readonly"
+    /// (auto-run read-only, auto-deny mutating).
+    pub approval_policy: String,
     /// Language assumed when none can be inferred from the current file.
     pub default_language: String,
 }
@@ -25,20 +32,26 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            endpoint: "http://localhost:7000".into(),
+            base_url: "http://localhost:7000".into(),
             api_key: String::new(),
             model: String::new(),
-            endpoint_id: String::new(),
+            temperature: 0.2,
+            max_tokens: 4096,
+            tool_timeout_secs: 60,
+            approval_policy: "prompt".into(),
             default_language: "rust".into(),
         }
     }
 }
 
 const KEYS: &[&str] = &[
-    "endpoint",
+    "base_url",
     "api_key",
     "model",
-    "endpoint_id",
+    "temperature",
+    "max_tokens",
+    "tool_timeout_secs",
+    "approval_policy",
     "default_language",
 ];
 
@@ -49,15 +62,19 @@ impl Config {
     /// written back to disk.
     pub fn load() -> Result<Self> {
         let mut cfg = Self::load_file(&config_path()?)?;
-        if let Ok(url) = std::env::var("ODYSSEUS_URL")
-            && !url.trim().is_empty()
-        {
-            cfg.endpoint = url.trim().trim_end_matches('/').to_string();
+        for var in ["ODYSSEUS_BASE_URL", "ODYSSEUS_URL"] {
+            if let Ok(v) = std::env::var(var)
+                && !v.trim().is_empty()
+            {
+                cfg.base_url = v.trim().trim_end_matches('/').to_string();
+            }
         }
-        if let Ok(token) = std::env::var("ODYSSEUS_API_TOKEN")
-            && !token.trim().is_empty()
-        {
-            cfg.api_key = token.trim().to_string();
+        for var in ["ODYSSEUS_API_KEY", "ODYSSEUS_API_TOKEN"] {
+            if let Ok(v) = std::env::var(var)
+                && !v.trim().is_empty()
+            {
+                cfg.api_key = v.trim().to_string();
+            }
         }
         Ok(cfg)
     }
@@ -92,10 +109,24 @@ impl Config {
 
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
-            "endpoint" => self.endpoint = value.trim_end_matches('/').to_string(),
+            "base_url" => self.base_url = value.trim_end_matches('/').to_string(),
             "api_key" => self.api_key = value.to_string(),
             "model" => self.model = value.to_string(),
-            "endpoint_id" => self.endpoint_id = value.to_string(),
+            "temperature" => {
+                self.temperature = value.parse().context("temperature must be a number")?
+            }
+            "max_tokens" => {
+                self.max_tokens = value.parse().context("max_tokens must be an integer")?
+            }
+            "tool_timeout_secs" => {
+                self.tool_timeout_secs = value
+                    .parse()
+                    .context("tool_timeout_secs must be an integer")?
+            }
+            "approval_policy" => match value {
+                "prompt" | "auto" | "readonly" => self.approval_policy = value.to_string(),
+                other => bail!("approval_policy must be prompt|auto|readonly, got '{other}'"),
+            },
             "default_language" => self.default_language = value.to_lowercase(),
             other => bail!(
                 "unknown config key '{other}' (valid keys: {})",
@@ -107,10 +138,13 @@ impl Config {
 
     pub fn get(&self, key: &str) -> Result<String> {
         Ok(match key {
-            "endpoint" => self.endpoint.clone(),
+            "base_url" => self.base_url.clone(),
             "api_key" => self.api_key.clone(),
             "model" => self.model.clone(),
-            "endpoint_id" => self.endpoint_id.clone(),
+            "temperature" => self.temperature.to_string(),
+            "max_tokens" => self.max_tokens.to_string(),
+            "tool_timeout_secs" => self.tool_timeout_secs.to_string(),
+            "approval_policy" => self.approval_policy.clone(),
             "default_language" => self.default_language.clone(),
             other => bail!(
                 "unknown config key '{other}' (valid keys: {})",
@@ -181,7 +215,7 @@ mod tests {
         assert_eq!(cfg, Config::default());
         assert!(path.exists(), "defaults should be persisted on first load");
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("endpoint: http://localhost:7000"));
+        assert!(raw.contains("base_url: http://localhost:7000"));
         assert!(raw.contains("default_language: rust"));
     }
 
@@ -190,14 +224,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yaml");
         let mut cfg = Config::load_file(&path).unwrap();
-        cfg.set("endpoint", "http://example.com:9999/").unwrap();
+        cfg.set("base_url", "http://example.com:9999/").unwrap();
         cfg.set("api_key", "ody_test123").unwrap();
         cfg.save_to(&path).unwrap();
 
         let reloaded = Config::load_file(&path).unwrap();
         // trailing slash is normalized away
-        assert_eq!(reloaded.endpoint, "http://example.com:9999");
+        assert_eq!(reloaded.base_url, "http://example.com:9999");
         assert_eq!(reloaded.api_key, "ody_test123");
+    }
+
+    #[test]
+    fn endpoint_alias_migrates_to_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "endpoint: http://old:7000\napi_key: ody_x\n").unwrap();
+        let cfg = Config::load_file(&path).unwrap();
+        assert_eq!(cfg.base_url, "http://old:7000");
+    }
+
+    #[test]
+    fn unknown_legacy_keys_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "base_url: http://x\nendpoint_id: ep1\n").unwrap();
+        let cfg = Config::load_file(&path).unwrap();
+        assert_eq!(cfg.base_url, "http://x");
+    }
+
+    #[test]
+    fn agent_defaults_are_sane() {
+        let cfg = Config::default();
+        assert_eq!(cfg.base_url, "http://localhost:7000");
+        assert_eq!(cfg.temperature, 0.2);
+        assert_eq!(cfg.max_tokens, 4096);
+        assert_eq!(cfg.tool_timeout_secs, 60);
+        assert_eq!(cfg.approval_policy, "prompt");
+    }
+
+    #[test]
+    fn set_and_get_new_keys() {
+        let mut cfg = Config::default();
+        cfg.set("base_url", "http://h:1/").unwrap();
+        cfg.set("approval_policy", "auto").unwrap();
+        assert_eq!(cfg.get("base_url").unwrap(), "http://h:1"); // trailing slash trimmed
+        assert_eq!(cfg.get("approval_policy").unwrap(), "auto");
     }
 
     #[test]

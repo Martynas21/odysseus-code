@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -11,10 +12,13 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
 use tokio::sync::mpsc;
 
-use crate::client::{ClientError, HistoryMessage, OdysseusClient};
+use crate::agent::{self, AgentEvent, ApprovalDecision, ApprovalPolicy};
 use crate::config::Config;
 use crate::context::PromptContext;
-use crate::session::{DEFAULT_SESSION_NAME, SessionStore};
+use crate::llm::Provider;
+use crate::llm::message::ChatMessage;
+use crate::llm::openai::OpenAiProvider;
+use crate::tools::ToolRegistry;
 
 const PAGE_SCROLL: usize = 10;
 
@@ -22,6 +26,8 @@ const PAGE_SCROLL: usize = 10;
 enum Role {
     User,
     Assistant,
+    /// A tool call or its result, rendered as an arrowed, dimmed aside.
+    Tool,
     Error,
     /// A local note from the client itself (e.g. after `/clear`), shown
     /// dimmed and without a speaker label.
@@ -34,19 +40,34 @@ struct DisplayMessage {
     content: String,
 }
 
+/// A tool call awaiting the user's approval, captured so the confirmation line
+/// can name it once a key is pressed.
+struct PendingApproval {
+    name: String,
+    args: String,
+}
+
 struct App {
-    session: String,
     endpoint: String,
     model: String,
     messages: Vec<DisplayMessage>,
+    /// Authoritative conversation sent to the model (system + turns).
+    history: Vec<ChatMessage>,
     input: String,
     /// Scroll position measured in rows up from the bottom of the transcript.
     /// 0 means "stick to the latest message".
     scroll_from_bottom: usize,
     thinking: bool,
-    /// When true, the status bar also shows the endpoint and session id.
+    /// When true, the status bar also shows the endpoint.
     /// Toggled with Tab (Ctrl+I); off by default to keep the chrome minimal.
     show_details: bool,
+    /// Index of the in-progress assistant bubble, if streaming.
+    streaming_idx: Option<usize>,
+    /// Approval channel back to the running agent turn, for the (Phase 6)
+    /// approval UI. Present only while a turn is in flight.
+    appr_tx: Option<mpsc::UnboundedSender<ApprovalDecision>>,
+    /// The mutating tool call currently awaiting a y/n/a keypress, if any.
+    pending_approval: Option<PendingApproval>,
     /// Start time, used for the steady, mode-independent bird wing-beat.
     started: Instant,
     /// Accumulated drift phase for the scrolling sky and waves. Advanced each
@@ -59,30 +80,19 @@ struct App {
 }
 
 impl App {
-    fn new(cfg: &Config, session: String, model: String, history: Vec<HistoryMessage>) -> Self {
-        let messages = history
-            .into_iter()
-            .map(|m| {
-                let role = if m.role == "user" {
-                    Role::User
-                } else {
-                    Role::Assistant
-                };
-                DisplayMessage {
-                    role,
-                    content: strip_context_prefix(&m.content).to_string(),
-                }
-            })
-            .collect();
+    fn new(cfg: &Config, model: String) -> Self {
         Self {
-            session,
-            endpoint: cfg.endpoint.clone(),
+            endpoint: cfg.base_url.clone(),
             model,
-            messages,
+            messages: Vec::new(),
+            history: Vec::new(),
             input: String::new(),
             scroll_from_bottom: 0,
             thinking: false,
             show_details: false,
+            streaming_idx: None,
+            appr_tx: None,
+            pending_approval: None,
             started: Instant::now(),
             anim_phase: 0.0,
             last_tick: Instant::now(),
@@ -94,69 +104,132 @@ impl App {
         // New content should be visible immediately.
         self.scroll_from_bottom = 0;
     }
+
+    /// Open a fresh assistant bubble for streaming deltas.
+    fn begin_assistant(&mut self) {
+        self.messages.push(DisplayMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
+        self.streaming_idx = Some(self.messages.len() - 1);
+        self.scroll_from_bottom = 0;
+    }
+
+    fn push_delta(&mut self, delta: &str) {
+        if self.streaming_idx.is_none() {
+            self.begin_assistant();
+        }
+        let idx = self.streaming_idx.unwrap();
+        self.messages[idx].content.push_str(delta);
+        self.scroll_from_bottom = 0;
+    }
+
+    fn end_assistant(&mut self) {
+        self.streaming_idx = None;
+    }
+
+    /// Map a keypress to an approval decision while a prompt is pending.
+    fn approval_key(&self, code: KeyCode) -> Option<ApprovalDecision> {
+        match code {
+            KeyCode::Char('y') | KeyCode::Enter => Some(ApprovalDecision::Approve),
+            KeyCode::Char('a') => Some(ApprovalDecision::ApproveAlways),
+            KeyCode::Char('n') | KeyCode::Esc => Some(ApprovalDecision::Deny),
+            _ => None,
+        }
+    }
 }
 
 pub async fn handle(
-    session_id: Option<&str>,
     project_path: Option<&Path>,
     current_file: Option<&Path>,
+    model_override: Option<&str>,
+    base_url_override: Option<&str>,
 ) -> Result<()> {
-    let cfg = Config::load()?;
-    let client = OdysseusClient::from_config(&cfg)?;
-    let mut store = SessionStore::load()?;
-
-    let (name, session) =
-        super::resolve_session_named(&client, &cfg, &mut store, session_id).await?;
-    let history = client.history(&session).await?;
-    let model = resolve_model_name(&client, &cfg, &session).await;
+    let mut cfg = Config::load()?;
+    if let Some(m) = model_override {
+        cfg.model = m.to_string();
+    }
+    if let Some(b) = base_url_override {
+        cfg.base_url = b.trim_end_matches('/').to_string();
+    }
+    let provider: Arc<dyn Provider> = Arc::new(OpenAiProvider::from_config(&cfg));
+    let registry = Arc::new(ToolRegistry::default_set());
     let ctx = PromptContext::build(project_path, current_file, &cfg.default_language);
+    let cwd = project_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let mut app = App::new(&cfg, session, model, history);
+    let model = if cfg.model.is_empty() {
+        "unknown".into()
+    } else {
+        cfg.model.clone()
+    };
+    let mut app = App::new(&cfg, model);
+    app.history.push(ChatMessage::system(ctx.system_prompt()));
+
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app, client, ctx, cfg, store, name).await;
+    let result = run(&mut terminal, &mut app, provider, registry, cfg, cwd).await;
     ratatui::restore();
     result
-}
-
-/// Best-effort display name for the model backing `session_id`: the configured
-/// model if set, otherwise whatever the server reports for that session, and
-/// "unknown" if neither is available.
-async fn resolve_model_name(client: &OdysseusClient, cfg: &Config, session_id: &str) -> String {
-    if !cfg.model.is_empty() {
-        return cfg.model.clone();
-    }
-    if let Ok(sessions) = client.list_sessions().await
-        && let Some(info) = sessions.into_iter().find(|s| s.id == session_id)
-        && !info.model.is_empty()
-    {
-        return info.model;
-    }
-    "unknown".into()
 }
 
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    client: OdysseusClient,
-    ctx: PromptContext,
+    provider: Arc<dyn Provider>,
+    registry: Arc<ToolRegistry>,
     cfg: Config,
-    mut store: SessionStore,
-    session_name: Option<String>,
+    cwd: std::path::PathBuf,
 ) -> Result<()> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ChatUpdate>();
+    let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
     loop {
         terminal.draw(|frame| draw(frame, app))?;
-        while let Ok(update) = rx.try_recv() {
-            match update {
-                ChatUpdate::Notice(note) => app.push(Role::System, note),
-                ChatUpdate::Reply(text) => {
-                    app.thinking = false;
-                    app.push(Role::Assistant, text);
+        while let Ok(ev) = ev_rx.try_recv() {
+            match ev {
+                AgentEvent::AssistantTextDelta(d) => app.push_delta(&d),
+                AgentEvent::AssistantTextDone => app.end_assistant(),
+                AgentEvent::ToolCallRequested { name, args } => {
+                    app.push(Role::Tool, format!("{name}: {}", summarize_args(&args)));
                 }
-                ChatUpdate::Failed(msg) => {
+                AgentEvent::ApprovalRequired { name, args } => {
+                    let pending = PendingApproval { name, args };
+                    app.push(
+                        Role::System,
+                        format!(
+                            "approve {} {}? [y]es / [n]o / [a]lways",
+                            pending.name,
+                            summarize_args(&pending.args)
+                        ),
+                    );
+                    app.pending_approval = Some(pending);
+                }
+                AgentEvent::ToolStarted { name } => {
+                    app.push(Role::Tool, format!("running {name}…"));
+                }
+                AgentEvent::ToolFinished { name, output, ok } => {
+                    let role = if ok { Role::Tool } else { Role::Error };
+                    app.push(role, format!("{name}: {output}"));
+                }
+                AgentEvent::Error(msg) => {
                     app.thinking = false;
+                    app.end_assistant();
+                    // If the turn aborted mid-approval, release the keyboard.
+                    app.pending_approval = None;
                     app.push(Role::Error, msg);
+                }
+                AgentEvent::Done => {
+                    app.thinking = false;
+                    app.end_assistant();
+                }
+                AgentEvent::TurnComplete(turns) => {
+                    app.history.extend(turns);
+                    app.thinking = false;
+                    app.end_assistant();
+                    // The turn is over: drop its approval sender and any stale
+                    // prompt (re-armed on the next turn).
+                    app.appr_tx = None;
+                    app.pending_approval = None;
                 }
             }
         }
@@ -170,6 +243,25 @@ async fn run(
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        // While a tool call awaits approval, the prompt owns the keyboard: a
+        // y/n/a (or Enter/Esc) resolves it and every other key is swallowed, so
+        // normal typing and quit can't slip past the decision.
+        if app.pending_approval.is_some() {
+            if let Some(decision) = app.approval_key(key.code) {
+                if let Some(tx) = &app.appr_tx {
+                    let _ = tx.send(decision);
+                }
+                let verb = match decision {
+                    ApprovalDecision::Approve => "approved",
+                    ApprovalDecision::ApproveAlways => "approved (always)",
+                    ApprovalDecision::Deny => "denied",
+                };
+                if let Some(pending) = app.pending_approval.take() {
+                    app.push(Role::System, format!("{verb} {}", pending.name));
+                }
+            }
+            continue; // swallow all keys while a prompt is pending
+        }
         match key.code {
             KeyCode::Esc => break,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
@@ -177,46 +269,51 @@ async fn run(
                 if app.thinking || app.input.trim().is_empty() {
                     continue;
                 }
-                let text = std::mem::take(&mut app.input);
-                let text = text.trim().to_string();
+                let text = std::mem::take(&mut app.input).trim().to_string();
                 if text == "/clear" {
-                    // Reset inline: session creation is a quick call, unlike
-                    // chat replies which stay on the background task.
-                    if let Err(err) =
-                        start_new_session(app, &client, &cfg, &mut store, session_name.as_deref())
-                            .await
-                    {
-                        app.push(Role::Error, format!("could not start a new session: {err}"));
-                    } else if session_name.is_some()
-                        && let Err(err) = store.save()
-                    {
-                        app.push(
-                            Role::Error,
-                            format!("new session started but could not be saved: {err}"),
-                        );
+                    app.messages.clear();
+                    let system = app.history.first().cloned();
+                    app.history.clear();
+                    if let Some(s) = system {
+                        app.history.push(s);
                     }
+                    app.push(Role::System, "Started a new conversation.".into());
                     continue;
                 }
                 app.push(Role::User, text.clone());
+                app.history.push(ChatMessage::user(text));
                 app.thinking = true;
-                let client = client.clone();
-                let session = app.session.clone();
-                let message = ctx.wrap(&text);
-                let tx = tx.clone();
+
+                // Each turn gets its own approval channel. The sender lives in
+                // `App` for the (Phase 6) approval UI; the receiver moves into
+                // the spawned agent task.
+                let (appr_tx, appr_rx) = mpsc::unbounded_channel::<ApprovalDecision>();
+                app.appr_tx = Some(appr_tx);
+
+                let provider = provider.clone();
+                let registry = registry.clone();
+                let history = app.history.clone();
+                let ev_tx = ev_tx.clone();
+                let policy = ApprovalPolicy::from_str(&cfg.approval_policy);
+                let agent_cfg = cfg.clone();
+                let cwd = cwd.clone();
                 tokio::spawn(async move {
-                    let notify = tx.clone();
-                    let result = chat_with_retries(&client, &session, &message, |note| {
-                        let _ = notify.send(ChatUpdate::Notice(note));
-                    })
+                    let new_turns = agent::run_agent(
+                        provider,
+                        registry,
+                        history,
+                        ev_tx.clone(),
+                        appr_rx,
+                        &agent_cfg,
+                        &cwd,
+                        policy,
+                    )
                     .await;
-                    let _ = tx.send(match result {
-                        Ok(text) => ChatUpdate::Reply(text),
-                        Err(msg) => ChatUpdate::Failed(msg),
-                    });
+                    let _ = ev_tx.send(AgentEvent::TurnComplete(new_turns));
                 });
             }
             // Tab and Ctrl+I (which most terminals deliver as Tab) reveal the
-            // endpoint and session id in the status bar.
+            // endpoint in the status bar.
             KeyCode::Tab => app.show_details = !app.show_details,
             KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.show_details = !app.show_details;
@@ -237,89 +334,19 @@ async fn run(
     Ok(())
 }
 
-/// Replace the current conversation with a brand-new server session so the
-/// model genuinely forgets prior context. On success the transcript is wiped
-/// down to a single dimmed note, and the store mapping for `name` (if any) is
-/// repointed at the fresh session so the next launch reuses it too.
-///
-/// The store is updated in memory only; the caller is responsible for saving.
-async fn start_new_session(
-    app: &mut App,
-    client: &OdysseusClient,
-    cfg: &Config,
-    store: &mut SessionStore,
-    name: Option<&str>,
-) -> Result<()> {
-    let session_name = name.unwrap_or(DEFAULT_SESSION_NAME);
-    let info = super::create_session(client, cfg, session_name).await?;
-    if let Some(name) = name {
-        store.insert(name, &info.id);
+/// One-line preview of a tool's JSON arguments for the transcript.
+fn summarize_args(args: &str) -> String {
+    let flat: String = args
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
+    // Truncate on a char boundary, not a byte index, so non-ASCII args (which
+    // real tool calls can carry) never split a multi-byte sequence.
+    if flat.chars().count() > 80 {
+        format!("{}…", flat.chars().take(80).collect::<String>())
+    } else {
+        flat
     }
-    app.session = info.id;
-    if !info.model.is_empty() {
-        app.model = info.model;
-    }
-    app.messages.clear();
-    app.push(Role::System, "Started a new session.".into());
-    Ok(())
-}
-
-/// A message from the background chat task to the draw loop. Retries stream
-/// `Notice`s ahead of the single terminal `Reply` or `Failed`.
-enum ChatUpdate {
-    Notice(String),
-    Reply(String),
-    Failed(String),
-}
-
-/// Initial attempt plus this many retries before giving up.
-const MAX_RETRIES: u32 = 5;
-
-/// Whether a chat failure is worth retrying. Transient problems (network, rate
-/// limiting, malformed bodies, server-side 5xx) are; permanent ones (auth, and
-/// other 4xx client errors) are not — retrying them only delays the real error.
-fn is_retryable(err: &ClientError) -> bool {
-    match err {
-        ClientError::Network { .. } | ClientError::RateLimited | ClientError::BadResponse(_) => {
-            true
-        }
-        ClientError::Http { status, .. } => *status >= 500,
-        ClientError::Unauthorized => false,
-    }
-}
-
-/// Send a chat message, retrying empty replies and transient failures up to
-/// [`MAX_RETRIES`] times. `notice` is called with a human-readable progress
-/// line before each retry. Returns the first non-empty reply, or an error
-/// string once retries are exhausted or a permanent failure occurs.
-async fn chat_with_retries(
-    client: &OdysseusClient,
-    session: &str,
-    message: &str,
-    mut notice: impl FnMut(String),
-) -> Result<String, String> {
-    for retry in 0..=MAX_RETRIES {
-        let outcome = client.chat(session, message).await;
-        match &outcome {
-            // A non-empty reply is the only success.
-            Ok(text) if !text.trim().is_empty() => return Ok(text.clone()),
-            // A permanent failure won't fix itself — surface it now.
-            Err(err) if !is_retryable(err) => return Err(err.to_string()),
-            _ => {}
-        }
-        let reason = match &outcome {
-            Ok(_) => "the model returned an empty reply".to_string(),
-            Err(err) => err.to_string(),
-        };
-        if retry == MAX_RETRIES {
-            return Err(format!("{reason} (gave up after {MAX_RETRIES} retries)"));
-        }
-        notice(format!(
-            "{reason} — retrying ({}/{MAX_RETRIES})…",
-            retry + 1
-        ));
-    }
-    unreachable!("loop returns on the final attempt")
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
@@ -380,7 +407,7 @@ fn status_line(app: &App) -> String {
     // Collapsed: just the model. Tab/Ctrl+I expands the connection details.
     let mut status = format!(" {}", app.model);
     if app.show_details {
-        status.push_str(&format!(" | {} | session: {}", app.endpoint, app.session));
+        status.push_str(&format!(" | {}", app.endpoint));
     }
     if app.thinking {
         status.push_str(" | thinking…");
@@ -578,17 +605,6 @@ fn put(buf: &mut Buffer, bounds: Rect, x: i32, y: i32, ch: char, style: Style) {
     }
 }
 
-/// Strip the `[context] {…} [/context]` metadata block that
-/// `PromptContext::wrap` prefixes to every user message before display.
-fn strip_context_prefix(content: &str) -> &str {
-    if let Some(rest) = content.strip_prefix("[context] ")
-        && let Some(end) = rest.find(" [/context]")
-    {
-        return rest[end + " [/context]".len()..].trim_start();
-    }
-    content
-}
-
 /// Hard-wrap text at `width` characters, preserving existing line breaks.
 /// Empty input still occupies one row.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -626,10 +642,29 @@ fn message_lines(messages: &[DisplayMessage], width: usize, thinking: bool) -> V
             lines.push(Line::default());
             continue;
         }
+        // Tool activity is unlabelled: the first row is a bright, arrow-prefixed
+        // call line; any wrapped continuation (tool output) is dimmed so the
+        // call stands out from its results.
+        if message.role == Role::Tool {
+            for (i, row) in wrap_text(&message.content, width).into_iter().enumerate() {
+                let (text, style) = if i == 0 {
+                    (
+                        format!("→ {row}"),
+                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    (row, Style::new().fg(Color::DarkGray))
+                };
+                lines.push(Line::from(Span::styled(text, style)));
+            }
+            lines.push(Line::default());
+            continue;
+        }
         let (label, color) = match message.role {
             Role::User => ("You", Color::Cyan),
             Role::Assistant => ("Odysseus", Color::Green),
             Role::Error => ("Error", Color::Red),
+            Role::Tool => unreachable!("handled above"),
             Role::System => unreachable!("handled above"),
         };
         lines.push(Line::from(Span::styled(
@@ -662,27 +697,103 @@ fn scroll_offset(total_rows: usize, viewport_rows: usize, from_bottom: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::PromptContext;
 
     #[test]
-    fn strip_context_prefix_removes_wrapped_metadata() {
-        let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
-        let wrapped = ctx.wrap("Explain borrowing");
-        assert_eq!(strip_context_prefix(&wrapped), "Explain borrowing");
+    fn streaming_delta_appends_to_open_assistant_bubble() {
+        let cfg = Config::default();
+        let mut app = App::new(&cfg, "m".into());
+        app.begin_assistant();
+        app.push_delta("Hel");
+        app.push_delta("lo");
+        assert_eq!(app.messages.last().unwrap().content, "Hello");
+        assert_eq!(app.messages.last().unwrap().role, Role::Assistant);
     }
 
     #[test]
-    fn strip_context_prefix_leaves_plain_messages_alone() {
-        assert_eq!(strip_context_prefix("just a message"), "just a message");
-        // Only a leading block is stripped.
-        let middle = "hello [context] {} [/context] world";
-        assert_eq!(strip_context_prefix(middle), middle);
+    fn approval_keys_map_to_decisions() {
+        let cfg = Config::default();
+        let app = App::new(&cfg, "m".into());
+        assert_eq!(
+            app.approval_key(KeyCode::Char('y')),
+            Some(ApprovalDecision::Approve)
+        );
+        assert_eq!(
+            app.approval_key(KeyCode::Enter),
+            Some(ApprovalDecision::Approve)
+        );
+        assert_eq!(
+            app.approval_key(KeyCode::Char('a')),
+            Some(ApprovalDecision::ApproveAlways)
+        );
+        assert_eq!(
+            app.approval_key(KeyCode::Char('n')),
+            Some(ApprovalDecision::Deny)
+        );
+        assert_eq!(app.approval_key(KeyCode::Esc), Some(ApprovalDecision::Deny));
+        assert_eq!(app.approval_key(KeyCode::Char('z')), None);
     }
 
     #[test]
-    fn strip_context_prefix_requires_closing_tag() {
-        let broken = "[context] {\"language\":\"rust\"} no closer";
-        assert_eq!(strip_context_prefix(broken), broken);
+    fn tool_line_renders_with_arrow_label() {
+        let messages = vec![DisplayMessage {
+            role: Role::Tool,
+            content: "shell: ls -la".into(),
+        }];
+        let lines = message_lines(&messages, 80, false);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.to_string().contains("→ shell: ls -la"))
+        );
+    }
+
+    #[test]
+    fn message_lines_styles_tool_and_error_distinctly() {
+        let messages = vec![
+            DisplayMessage {
+                role: Role::Tool,
+                content: "shell: echo hi".into(),
+            },
+            DisplayMessage {
+                role: Role::Error,
+                content: "denied shell".into(),
+            },
+        ];
+        let lines = message_lines(&messages, 80, false);
+        // Tool lines are yellow and arrow-prefixed.
+        let tool_line = lines
+            .iter()
+            .find(|l| l.to_string().contains("echo hi"))
+            .unwrap();
+        assert!(tool_line.to_string().starts_with('→'));
+        assert!(
+            tool_line
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Yellow)),
+            "tool call line should be yellow"
+        );
+        // Error keeps its red "Error:" label.
+        assert!(lines.iter().any(|l| l.to_string() == "Error:"));
+        let error_label = lines.iter().find(|l| l.to_string() == "Error:").unwrap();
+        assert!(
+            error_label
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Red)),
+            "error label should be red"
+        );
+    }
+
+    #[test]
+    fn summarize_args_truncates_on_char_boundary() {
+        // A long string of multi-byte chars must not panic at the 80-byte mark.
+        let args = "é".repeat(200);
+        let out = summarize_args(&args);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().count(), 81); // 80 chars + ellipsis
+        // Short input is returned unchanged.
+        assert_eq!(summarize_args("{\"a\":1}"), "{\"a\":1}");
     }
 
     #[test]
@@ -731,29 +842,6 @@ mod tests {
         // Content shorter than the viewport never scrolls.
         assert_eq!(scroll_offset(3, 4, 0), 0);
         assert_eq!(scroll_offset(3, 4, 5), 0);
-    }
-
-    #[test]
-    fn app_push_resets_scroll_and_history_strips_context() {
-        let cfg = Config::default();
-        let history = vec![
-            HistoryMessage {
-                role: "user".into(),
-                content: "[context] {\"language\":\"rust\"} [/context]\n\nhi".into(),
-            },
-            HistoryMessage {
-                role: "assistant".into(),
-                content: "hey".into(),
-            },
-        ];
-        let mut app = App::new(&cfg, "s1".into(), "qwen3".into(), history);
-        assert_eq!(app.messages[0].content, "hi");
-        assert_eq!(app.messages[0].role, Role::User);
-        assert_eq!(app.messages[1].role, Role::Assistant);
-
-        app.scroll_from_bottom = 7;
-        app.push(Role::Assistant, "new".into());
-        assert_eq!(app.scroll_from_bottom, 0);
     }
 
     #[test]
@@ -946,13 +1034,10 @@ mod tests {
         // transcript with a wall of text and confirm every blue boat/water cell
         // sits inside the band, never up among the messages.
         let cfg = Config::default();
-        let history: Vec<HistoryMessage> = (0..60)
-            .map(|_| HistoryMessage {
-                role: "assistant".into(),
-                content: "X".repeat(80),
-            })
-            .collect();
-        let mut app = App::new(&cfg, "s".into(), "m".into(), history);
+        let mut app = App::new(&cfg, "m".into());
+        for _ in 0..60 {
+            app.push(Role::Assistant, "X".repeat(80));
+        }
 
         let area = Rect::new(0, 0, 60, 30);
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
@@ -1005,82 +1090,10 @@ mod tests {
         assert_eq!(lines[0].to_string(), "Started a new session.");
     }
 
-    #[tokio::test]
-    async fn start_new_session_resets_transcript_and_remaps_store() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/api/session")
-            .with_status(200)
-            .with_body(r#"{"id":"new-sid","name":"odysseus-code","model":"qwen3"}"#)
-            .create_async()
-            .await;
-
-        let cfg = Config {
-            endpoint: server.url(),
-            endpoint_id: "ep1".into(),
-            model: "qwen3".into(),
-            ..Config::default()
-        };
-        let client = crate::client::OdysseusClient::new(server.url(), "ody_tok");
-        let mut store = SessionStore::default();
-        store.insert("odysseus-code", "old-sid");
-
-        let history = vec![HistoryMessage {
-            role: "user".into(),
-            content: "hi".into(),
-        }];
-        let mut app = App::new(&cfg, "old-sid".into(), "old-model".into(), history);
-        assert_eq!(app.messages.len(), 1);
-
-        start_new_session(&mut app, &client, &cfg, &mut store, Some("odysseus-code"))
-            .await
-            .unwrap();
-
-        // New server session swapped in, transcript replaced by the note only.
-        assert_eq!(app.session, "new-sid");
-        // The status bar tracks the new session's model.
-        assert_eq!(app.model, "qwen3");
-        assert_eq!(app.messages.len(), 1);
-        assert_eq!(app.messages[0].role, Role::System);
-        assert_eq!(app.scroll_from_bottom, 0);
-        // Store now points the friendly name at the fresh session.
-        assert_eq!(store.server_id("odysseus-code"), Some("new-sid"));
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn start_new_session_without_name_leaves_store_untouched() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/api/session")
-            .with_status(200)
-            .with_body(r#"{"id":"new-sid","name":"odysseus-code","model":"qwen3"}"#)
-            .create_async()
-            .await;
-
-        let cfg = Config {
-            endpoint: server.url(),
-            endpoint_id: "ep1".into(),
-            model: "qwen3".into(),
-            ..Config::default()
-        };
-        let client = crate::client::OdysseusClient::new(server.url(), "ody_tok");
-        let mut store = SessionStore::default();
-        let mut app = App::new(&cfg, "raw-id".into(), "qwen3".into(), Vec::new());
-
-        start_new_session(&mut app, &client, &cfg, &mut store, None)
-            .await
-            .unwrap();
-
-        assert_eq!(app.session, "new-sid");
-        // A raw-id launch has no friendly name to remap.
-        assert_eq!(store, SessionStore::default());
-    }
-
     #[test]
     fn status_line_is_just_the_model_by_default() {
         let cfg = Config::default();
-        let mut app = App::new(&cfg, "s1".into(), "qwen3".into(), Vec::new());
+        let mut app = App::new(&cfg, "qwen3".into());
         let line = status_line(&app);
         assert!(line.contains("qwen3"));
         // No labels, endpoint, or session id while collapsed.
@@ -1090,176 +1103,5 @@ mod tests {
         assert!(!line.contains("thinking"));
         app.thinking = true;
         assert!(status_line(&app).contains("thinking…"));
-    }
-
-    #[test]
-    fn status_line_expands_endpoint_and_session_when_details_on() {
-        let cfg = Config::default();
-        let mut app = App::new(&cfg, "sess-123".into(), "qwen3".into(), Vec::new());
-        app.show_details = true;
-        let line = status_line(&app);
-        assert!(line.contains("qwen3"));
-        assert!(line.contains("http://localhost:7000"));
-        assert!(line.contains("session: sess-123"));
-    }
-
-    #[tokio::test]
-    async fn resolve_model_name_prefers_configured_model() {
-        let cfg = Config {
-            model: "configured-model".into(),
-            ..Config::default()
-        };
-        // The client points nowhere: a configured model short-circuits any call.
-        let client = crate::client::OdysseusClient::new("http://127.0.0.1:1", "tok");
-        assert_eq!(
-            resolve_model_name(&client, &cfg, "any").await,
-            "configured-model"
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_model_name_falls_back_to_server_session_model() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("GET", "/api/sessions")
-            .with_status(200)
-            .with_body(r#"[{"id":"sess-123","name":"x","model":"server-model"}]"#)
-            .create_async()
-            .await;
-        let cfg = Config::default(); // no configured model
-        let client = crate::client::OdysseusClient::new(server.url(), "tok");
-        assert_eq!(
-            resolve_model_name(&client, &cfg, "sess-123").await,
-            "server-model"
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_model_name_is_unknown_when_unresolvable() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("GET", "/api/sessions")
-            .with_status(200)
-            .with_body("[]")
-            .create_async()
-            .await;
-        let cfg = Config::default();
-        let client = crate::client::OdysseusClient::new(server.url(), "tok");
-        assert_eq!(
-            resolve_model_name(&client, &cfg, "missing").await,
-            "unknown"
-        );
-    }
-
-    #[tokio::test]
-    async fn chat_with_retries_retries_empty_reply_then_succeeds() {
-        let mut server = mockito::Server::new_async().await;
-        let empty = server
-            .mock("POST", "/api/chat")
-            .with_status(200)
-            .with_body(r#"{"response":"  "}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let ok = server
-            .mock("POST", "/api/chat")
-            .with_status(200)
-            .with_body(r#"{"response":"hello"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let client = crate::client::OdysseusClient::new(server.url(), "tok");
-
-        let mut notices = Vec::new();
-        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
-
-        assert_eq!(reply, Ok("hello".to_string()));
-        assert_eq!(notices.len(), 1);
-        assert!(
-            notices[0].contains("empty") && notices[0].contains("(1/5)"),
-            "unexpected notice: {:?}",
-            notices[0]
-        );
-        empty.assert_async().await;
-        ok.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn chat_with_retries_retries_transient_server_error() {
-        let mut server = mockito::Server::new_async().await;
-        let boom = server
-            .mock("POST", "/api/chat")
-            .with_status(500)
-            .with_body("boom")
-            .expect(1)
-            .create_async()
-            .await;
-        let ok = server
-            .mock("POST", "/api/chat")
-            .with_status(200)
-            .with_body(r#"{"response":"ok"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let client = crate::client::OdysseusClient::new(server.url(), "tok");
-
-        let mut notices = Vec::new();
-        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
-
-        assert_eq!(reply, Ok("ok".to_string()));
-        assert_eq!(notices.len(), 1);
-        assert!(
-            notices[0].contains("500") && notices[0].contains("(1/5)"),
-            "unexpected notice: {:?}",
-            notices[0]
-        );
-        boom.assert_async().await;
-        ok.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn chat_with_retries_does_not_retry_permanent_failure() {
-        let mut server = mockito::Server::new_async().await;
-        // expect(1): a 401 must be tried exactly once, never retried.
-        let unauthorized = server
-            .mock("POST", "/api/chat")
-            .with_status(401)
-            .with_body(r#"{"error":"Not authenticated"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let client = crate::client::OdysseusClient::new(server.url(), "tok");
-
-        let mut notices = Vec::new();
-        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
-
-        assert!(reply.is_err());
-        assert!(notices.is_empty(), "permanent failure should not retry");
-        unauthorized.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn chat_with_retries_gives_up_after_max_retries() {
-        let mut server = mockito::Server::new_async().await;
-        // Initial attempt plus five retries: six identical empty replies.
-        let empty = server
-            .mock("POST", "/api/chat")
-            .with_status(200)
-            .with_body(r#"{"response":""}"#)
-            .expect(6)
-            .create_async()
-            .await;
-        let client = crate::client::OdysseusClient::new(server.url(), "tok");
-
-        let mut notices = Vec::new();
-        let reply = chat_with_retries(&client, "s1", "hi", |n| notices.push(n)).await;
-
-        let err = reply.unwrap_err();
-        assert!(
-            err.contains("gave up after 5 retries"),
-            "unexpected error: {err:?}"
-        );
-        assert_eq!(notices.len(), 5);
-        empty.assert_async().await;
     }
 }

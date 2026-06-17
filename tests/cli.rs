@@ -6,21 +6,40 @@ fn bin() -> Command {
 }
 
 #[test]
-fn help_lists_all_subcommands() {
+fn help_lists_remaining_subcommands() {
+    bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config").and(predicate::str::contains("tui")));
+}
+
+#[test]
+fn help_has_no_models_subcommand() {
+    bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("models").not());
+}
+
+#[test]
+fn help_lists_global_flags() {
     bin().arg("--help").assert().success().stdout(
-        predicate::str::contains("models")
-            .and(predicate::str::contains("config"))
-            .and(predicate::str::contains("tui")),
+        predicate::str::contains("--project-path")
+            .and(predicate::str::contains("--current-file"))
+            .and(predicate::str::contains("--model"))
+            .and(predicate::str::contains("--base-url")),
     );
 }
 
 #[test]
-fn help_lists_global_context_flags() {
-    bin().arg("--help").assert().success().stdout(
-        predicate::str::contains("--session-id")
-            .and(predicate::str::contains("--project-path"))
-            .and(predicate::str::contains("--current-file")),
-    );
+fn help_dropped_session_id() {
+    bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--session-id").not());
 }
 
 #[test]
@@ -33,17 +52,13 @@ fn version_prints_crate_version() {
 }
 
 #[test]
-fn unknown_subcommand_fails_with_usage() {
-    bin()
-        .arg("frobnicate")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("Usage"));
+fn subcommands_have_their_own_help() {
+    for sub in ["config", "tui"] {
+        bin().args([sub, "--help"]).assert().success();
+    }
 }
 
 #[test]
-fn subcommands_have_their_own_help() {
-    for sub in ["models", "config", "tui"] {
-        bin().args([sub, "--help"]).assert().success();
-    }
+fn run_subcommand_has_help() {
+    bin().args(["run", "--help"]).assert().success();
 }
