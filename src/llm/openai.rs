@@ -39,6 +39,7 @@ struct Delta {
 
 #[derive(Deserialize)]
 struct ToolCallChunk {
+    #[serde(default)]
     index: usize,
     #[serde(default)]
     id: Option<String>,
@@ -216,7 +217,18 @@ impl Provider for OpenAiProvider {
                         st.finished = true;
                     }
                     None => {
-                        // Stream ended without [DONE]; synthesize Done.
+                        // Stream ended. Drain any final line that arrived
+                        // without a trailing newline so its payload (e.g. the
+                        // closing fragment of a tool call's arguments) isn't
+                        // dropped, then synthesize Done.
+                        if let Some(data) = st.decoder.flush()
+                            && data != "[DONE]"
+                        {
+                            match parse_chunk(&data) {
+                                Ok(events) => st.queue.extend(events.into_iter().map(Ok)),
+                                Err(e) => st.queue.push_back(Err(e)),
+                            }
+                        }
                         st.queue.push_back(Ok(StreamEvent::Done));
                         st.finished = true;
                     }
@@ -341,6 +353,24 @@ mod tests {
     #[test]
     fn parse_chunk_malformed_is_bad_stream() {
         assert!(parse_chunk("not json").is_err());
+    }
+
+    #[test]
+    fn parse_chunk_tool_call_fragment_without_index_defaults_to_zero() {
+        // A non-conforming server omits `index` entirely; this must not abort
+        // the stream — it defaults to index 0.
+        let data = r#"{"choices":[{"delta":{"tool_calls":[
+            {"function":{"arguments":"}"}}]}}]}"#;
+        let events = parse_chunk(data).unwrap();
+        assert_eq!(
+            events,
+            vec![StreamEvent::ToolCallDelta {
+                index: 0,
+                id: None,
+                name: None,
+                arguments: "}".into(),
+            }]
+        );
     }
 
     #[test]

@@ -66,7 +66,7 @@ odysseus-code config set model qwen3
 
 ```sh
 # Bare invocation opens the full-screen interactive chat (same as `tui`).
-# Esc or Ctrl-C quits; /clear starts a fresh server session.
+# Esc stops the model mid-reply; Ctrl-C quits; /clear starts a fresh server session.
 odysseus-code
 
 # What can the backend serve?

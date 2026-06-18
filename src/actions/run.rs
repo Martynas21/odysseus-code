@@ -3,18 +3,13 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use tokio::sync::mpsc;
 
 use crate::agent::{self, AgentEvent, ApprovalPolicy};
 use crate::config::Config;
-use crate::context::PromptContext;
-use crate::llm::Provider;
 use crate::llm::message::ChatMessage;
-use crate::llm::openai::OpenAiProvider;
-use crate::tools::ToolRegistry;
 
 /// Run a single agent turn for `prompt` and stream the reply to stdout.
 ///
@@ -33,22 +28,11 @@ pub async fn handle(
     base_url_override: Option<&str>,
 ) -> Result<()> {
     let mut cfg = Config::load()?;
-    if let Some(m) = model_override {
-        cfg.model = m.to_string();
-    }
-    if let Some(b) = base_url_override {
-        cfg.base_url = b.trim_end_matches('/').to_string();
-    }
-
-    let provider: Arc<dyn Provider> = Arc::new(OpenAiProvider::from_config(&cfg));
-    let registry = Arc::new(ToolRegistry::default_set());
-    let ctx = PromptContext::build(project_path, current_file, &cfg.default_language);
-    let cwd = project_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    cfg.apply_overrides(model_override, base_url_override);
+    let session = crate::actions::build_session(&cfg, project_path, current_file);
 
     let history = vec![
-        ChatMessage::system(ctx.system_prompt()),
+        ChatMessage::system(session.ctx.system_prompt()),
         ChatMessage::user(prompt),
     ];
 
@@ -64,6 +48,9 @@ pub async fn handle(
     let (_appr_tx, appr_rx) = mpsc::unbounded_channel();
 
     let think = !no_think;
+    let provider = session.provider;
+    let registry = session.registry;
+    let cwd = session.cwd;
     // Drive the agent on a task so we can drain its events as they arrive.
     let agent_task = tokio::spawn(async move {
         agent::run_agent(

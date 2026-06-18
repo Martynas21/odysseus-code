@@ -49,22 +49,7 @@ pub struct ChatRequest {
 
 impl ChatRequest {
     pub fn to_body(&self) -> Value {
-        let mut messages: Vec<Value> = self.messages.iter().map(ChatMessage::to_wire).collect();
-        if !self.think {
-            // Inject qwen3's `/no_think` soft-switch into the prompt. This is the
-            // robust path for servers (e.g. LM Studio) that ignore the
-            // `chat_template_kwargs` param set below. Apply to the latest user
-            // message, falling back to the system message.
-            let idx = messages
-                .iter()
-                .rposition(|m| m["role"] == "user")
-                .or_else(|| messages.iter().position(|m| m["role"] == "system"));
-            if let Some(i) = idx
-                && let Some(content) = messages[i]["content"].as_str()
-            {
-                messages[i]["content"] = format!("{content} /no_think").into();
-            }
-        }
+        let messages: Vec<Value> = self.messages.iter().map(ChatMessage::to_wire).collect();
         let mut body = json!({
             "model": self.model,
             "messages": messages,
@@ -78,8 +63,6 @@ impl ChatRequest {
             body["tool_choice"] = "auto".into();
         }
         if !self.think {
-            // Belt-and-suspenders: also send the documented param for servers
-            // that honor it (vLLM, etc.).
             body["chat_template_kwargs"] = json!({"enable_thinking": false});
         }
         body
@@ -174,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn no_think_disables_thinking_via_param_and_prompt_token() {
+    fn no_think_disables_thinking_via_param_only() {
         let req = ChatRequest {
             model: "m".into(),
             messages: vec![ChatMessage::system("sys"), ChatMessage::user("hi")],
@@ -185,9 +168,7 @@ mod tests {
         };
         let body = req.to_body();
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
-        // The `/no_think` soft-switch is appended to the latest user message.
-        assert_eq!(body["messages"][1]["content"], "hi /no_think");
-        // The system message is untouched.
         assert_eq!(body["messages"][0]["content"], "sys");
+        assert_eq!(body["messages"][1]["content"], "hi");
     }
 }

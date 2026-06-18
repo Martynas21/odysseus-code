@@ -131,12 +131,13 @@ pub async fn run_agent(
     think: bool,
 ) -> Vec<ChatMessage> {
     let base_len = history.len();
+    let tools = registry.defs();
 
     for _ in 0..MAX_ITERATIONS {
         let req = ChatRequest {
             model: cfg.model.clone(),
             messages: history.clone(),
-            tools: registry.defs(),
+            tools: tools.clone(),
             temperature: cfg.temperature,
             max_tokens: cfg.max_tokens,
             think,
@@ -175,6 +176,12 @@ pub async fn run_agent(
                 Ok(StreamEvent::Done) => break,
                 Err(e) => {
                     let _ = ev_tx.send(AgentEvent::Error(e.to_string()));
+                    history.push(ChatMessage {
+                        role: Role::Assistant,
+                        content: text,
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                    });
                     return history.split_off(base_len);
                 }
             }
@@ -203,7 +210,17 @@ pub async fn run_agent(
                 args: call.arguments.clone(),
             });
 
-            let safety = registry.safety(&call.name).unwrap_or(Safety::Mutating);
+            let Some(tool) = registry.get(&call.name) else {
+                let msg = format!("unknown tool '{}'", call.name);
+                history.push(ChatMessage::tool_result(&call.id, &msg));
+                let _ = ev_tx.send(AgentEvent::ToolFinished {
+                    name: call.name.clone(),
+                    output: msg,
+                    ok: false,
+                });
+                continue;
+            };
+            let safety = tool.safety();
             let allowed = match (safety, policy) {
                 (Safety::ReadOnly, _) | (_, ApprovalPolicy::Auto) => true,
                 (Safety::Mutating, ApprovalPolicy::ReadOnly) => false,
@@ -239,18 +256,10 @@ pub async fn run_agent(
             let _ = ev_tx.send(AgentEvent::ToolStarted {
                 name: call.name.clone(),
             });
-            // Broken JSON args fall through to `Null`; the tool's own arg
-            // validation then rejects it and the error becomes the tool result,
-            // so the model still gets actionable feedback (no silent failure).
+
             let args: serde_json::Value =
                 serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
-            let result = match registry.get(&call.name) {
-                Some(tool) => tool.execute(&args, cwd, cfg.tool_timeout_secs).await,
-                None => Err(crate::tools::ToolError::Failed(format!(
-                    "unknown tool '{}'",
-                    call.name
-                ))),
-            };
+            let result = tool.execute(&args, cwd, cfg.tool_timeout_secs).await;
             let (output, ok) = match result {
                 Ok(out) => (out, true),
                 Err(e) => (e.to_string(), false),
@@ -557,5 +566,101 @@ mod tests {
             }
         }
         assert!(saw_error);
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_fails_without_approval_prompt() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            vec![
+                StreamEvent::ToolCallDelta {
+                    index: 0,
+                    id: Some("c1".into()),
+                    name: Some("teleport".into()),
+                    arguments: "{}".into(),
+                },
+                StreamEvent::Done,
+            ],
+            vec![StreamEvent::TextDelta("ok".into()), StreamEvent::Done],
+        ]));
+        let registry = Arc::new(ToolRegistry::default_set());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_atx, arx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+
+        let new = run_agent(
+            provider,
+            registry,
+            vec![ChatMessage::user("do it")],
+            tx,
+            arx,
+            &cfg(),
+            dir.path(),
+            ApprovalPolicy::Prompt,
+            true,
+        )
+        .await;
+
+        let mut saw_approval = false;
+        let mut failed_unknown = false;
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                AgentEvent::ApprovalRequired { .. } => saw_approval = true,
+                AgentEvent::ToolFinished { ok, output, .. } => {
+                    failed_unknown = !ok && output.contains("unknown tool");
+                }
+                _ => {}
+            }
+        }
+        assert!(!saw_approval, "must not prompt approval for unknown tool");
+        assert!(failed_unknown);
+        let tool_msg = new.iter().find(|m| m.role == Role::Tool).unwrap();
+        assert!(tool_msg.content.contains("unknown tool"));
+    }
+
+    struct MidStreamErrorProvider;
+    #[async_trait]
+    impl Provider for MidStreamErrorProvider {
+        async fn chat_stream(
+            &self,
+            _req: ChatRequest,
+        ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
+            let items: Vec<Result<StreamEvent, ProviderError>> = vec![
+                Ok(StreamEvent::TextDelta("partial".into())),
+                Err(ProviderError::BadStream("reset".into())),
+            ];
+            Ok(stream::iter(items).boxed())
+        }
+    }
+
+    #[tokio::test]
+    async fn mid_stream_error_keeps_role_alternation() {
+        let provider = Arc::new(MidStreamErrorProvider);
+        let registry = Arc::new(ToolRegistry::default_set());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_atx, arx) = mpsc::unbounded_channel();
+
+        let new = run_agent(
+            provider,
+            registry,
+            vec![ChatMessage::system("sys"), ChatMessage::user("hi")],
+            tx,
+            arx,
+            &cfg(),
+            Path::new("."),
+            ApprovalPolicy::Auto,
+            true,
+        )
+        .await;
+
+        let mut saw_error = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AgentEvent::Error(_)) {
+                saw_error = true;
+            }
+        }
+        assert!(saw_error);
+        let last = new.last().unwrap();
+        assert_eq!(last.role, Role::Assistant);
+        assert_eq!(last.content, "partial");
     }
 }

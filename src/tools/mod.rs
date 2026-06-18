@@ -80,10 +80,6 @@ impl ToolRegistry {
             .find(|t| t.name() == name)
             .map(|b| b.as_ref())
     }
-
-    pub fn safety(&self, name: &str) -> Option<Safety> {
-        self.get(name).map(|t| t.safety())
-    }
 }
 
 /// Resolve `rel` (a tool-supplied path) against the workspace `cwd`, then
@@ -181,8 +177,8 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"shell"));
-        assert_eq!(reg.safety("read_file"), Some(Safety::ReadOnly));
-        assert_eq!(reg.safety("shell"), Some(Safety::Mutating));
-        assert_eq!(reg.safety("nope"), None);
+        assert_eq!(reg.get("read_file").map(|t| t.safety()), Some(Safety::ReadOnly));
+        assert_eq!(reg.get("shell").map(|t| t.safety()), Some(Safety::Mutating));
+        assert!(reg.get("nope").is_none());
     }
 }

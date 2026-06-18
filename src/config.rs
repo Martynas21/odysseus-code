@@ -44,18 +44,19 @@ impl Default for Config {
     }
 }
 
-const KEYS: &[&str] = &[
-    "base_url",
-    "api_key",
-    "model",
-    "temperature",
-    "max_tokens",
-    "tool_timeout_secs",
-    "approval_policy",
-    "default_language",
-];
-
 impl Config {
+    fn keys() -> Vec<String> {
+        let value = serde_yaml::to_value(Config::default()).expect("Config serializes");
+        value
+            .as_mapping()
+            .map(|m| {
+                m.keys()
+                    .filter_map(|k| k.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Load the config file, creating it with defaults on first run, then
     /// apply `ODYSSEUS_URL` / `ODYSSEUS_API_TOKEN` env overrides (same
     /// convention as the Odysseus integration scripts). Env values are never
@@ -107,6 +108,15 @@ impl Config {
         Ok(())
     }
 
+    pub fn apply_overrides(&mut self, model: Option<&str>, base_url: Option<&str>) {
+        if let Some(m) = model {
+            self.model = m.to_string();
+        }
+        if let Some(b) = base_url {
+            self.base_url = b.trim_end_matches('/').to_string();
+        }
+    }
+
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "base_url" => self.base_url = value.trim_end_matches('/').to_string(),
@@ -130,26 +140,29 @@ impl Config {
             "default_language" => self.default_language = value.to_lowercase(),
             other => bail!(
                 "unknown config key '{other}' (valid keys: {})",
-                KEYS.join(", ")
+                Self::keys().join(", ")
             ),
         }
         Ok(())
     }
 
     pub fn get(&self, key: &str) -> Result<String> {
-        Ok(match key {
-            "base_url" => self.base_url.clone(),
-            "api_key" => self.api_key.clone(),
-            "model" => self.model.clone(),
-            "temperature" => self.temperature.to_string(),
-            "max_tokens" => self.max_tokens.to_string(),
-            "tool_timeout_secs" => self.tool_timeout_secs.to_string(),
-            "approval_policy" => self.approval_policy.clone(),
-            "default_language" => self.default_language.clone(),
-            other => bail!(
-                "unknown config key '{other}' (valid keys: {})",
-                KEYS.join(", ")
-            ),
+        let value = serde_yaml::to_value(self).expect("Config serializes");
+        let mapping = value.as_mapping().expect("Config serializes to a mapping");
+        let scalar = mapping
+            .get(serde_yaml::Value::from(key))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown config key '{key}' (valid keys: {})",
+                    Self::keys().join(", ")
+                )
+            })?;
+        Ok(match scalar {
+            serde_yaml::Value::String(s) => s.clone(),
+            serde_yaml::Value::Number(n) => n.to_string(),
+            serde_yaml::Value::Bool(b) => b.to_string(),
+            serde_yaml::Value::Null => String::new(),
+            other => serde_yaml::to_string(other)?.trim().to_string(),
         })
     }
 }
@@ -292,7 +305,32 @@ mod tests {
     #[test]
     fn get_returns_each_key() {
         let cfg = Config::default();
-        for key in KEYS {
+        for key in Config::keys() {
+            cfg.get(&key).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_key_round_trips_through_set_and_get() {
+        let cases = [
+            ("base_url", "http://h:1"),
+            ("api_key", "k"),
+            ("model", "m"),
+            ("temperature", "0.5"),
+            ("max_tokens", "100"),
+            ("tool_timeout_secs", "30"),
+            ("approval_policy", "auto"),
+            ("default_language", "go"),
+        ];
+        for key in Config::keys() {
+            assert!(
+                cases.iter().any(|(c, _)| *c == key),
+                "no set case for config key '{key}'"
+            );
+        }
+        for (key, value) in cases {
+            let mut cfg = Config::default();
+            cfg.set(key, value).unwrap();
             cfg.get(key).unwrap();
         }
     }

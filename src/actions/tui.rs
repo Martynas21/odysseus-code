@@ -14,10 +14,8 @@ use tokio::sync::mpsc;
 
 use crate::agent::{self, AgentEvent, ApprovalDecision, ApprovalPolicy};
 use crate::config::Config;
-use crate::context::PromptContext;
 use crate::llm::Provider;
 use crate::llm::message::ChatMessage;
-use crate::llm::openai::OpenAiProvider;
 use crate::tools::ToolRegistry;
 
 const PAGE_SCROLL: usize = 10;
@@ -82,6 +80,13 @@ struct App {
     /// Wall-clock instant of the previous frame, used to measure that elapsed
     /// time.
     last_tick: Instant,
+    /// Handle to the in-flight turn's agent task, kept so Esc can abort it.
+    agent_task: Option<tokio::task::JoinHandle<()>>,
+    /// Cached wrapped transcript lines, keyed by `(messages.len(), last-message
+    /// content length, width)`. The streaming bubble only ever mutates the last
+    /// message in place, so this fingerprint catches every rendering-relevant
+    /// change and lets the 50ms redraw skip re-wrapping the whole transcript.
+    transcript_cache: Option<(usize, usize, usize, Vec<Line<'static>>)>,
 }
 
 impl App {
@@ -99,11 +104,27 @@ impl App {
             appr_tx: None,
             pending_approval: None,
             reasoning: String::new(),
-            think: true,
+            think: false,
             started: Instant::now(),
             anim_phase: 0.0,
             last_tick: Instant::now(),
+            agent_task: None,
+            transcript_cache: None,
         }
+    }
+
+    fn transcript_lines(&mut self, width: usize) -> Vec<Line<'static>> {
+        let key = (
+            self.messages.len(),
+            self.messages.last().map_or(0, |m| m.content.len()),
+            width,
+        );
+        let fresh = matches!(&self.transcript_cache, Some((l, c, w, _)) if (*l, *c, *w) == key);
+        if !fresh {
+            let lines = message_lines(&self.messages, width);
+            self.transcript_cache = Some((key.0, key.1, key.2, lines));
+        }
+        self.transcript_cache.as_ref().unwrap().3.clone()
     }
 
     fn push(&mut self, role: Role, content: String) {
@@ -135,12 +156,23 @@ impl App {
         self.streaming_idx = None;
     }
 
-    /// Map a keypress to an approval decision while a prompt is pending.
+    fn stop_turn(&mut self) {
+        if let Some(handle) = self.agent_task.take() {
+            handle.abort();
+        }
+        self.thinking = false;
+        self.end_assistant();
+        self.reasoning.clear();
+        self.appr_tx = None;
+        self.pending_approval = None;
+        self.push(Role::System, "Stopped.".into());
+    }
+
     fn approval_key(&self, code: KeyCode) -> Option<ApprovalDecision> {
         match code {
             KeyCode::Char('y') | KeyCode::Enter => Some(ApprovalDecision::Approve),
             KeyCode::Char('a') => Some(ApprovalDecision::ApproveAlways),
-            KeyCode::Char('n') | KeyCode::Esc => Some(ApprovalDecision::Deny),
+            KeyCode::Char('n') => Some(ApprovalDecision::Deny),
             _ => None,
         }
     }
@@ -153,18 +185,8 @@ pub async fn handle(
     base_url_override: Option<&str>,
 ) -> Result<()> {
     let mut cfg = Config::load()?;
-    if let Some(m) = model_override {
-        cfg.model = m.to_string();
-    }
-    if let Some(b) = base_url_override {
-        cfg.base_url = b.trim_end_matches('/').to_string();
-    }
-    let provider: Arc<dyn Provider> = Arc::new(OpenAiProvider::from_config(&cfg));
-    let registry = Arc::new(ToolRegistry::default_set());
-    let ctx = PromptContext::build(project_path, current_file, &cfg.default_language);
-    let cwd = project_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    cfg.apply_overrides(model_override, base_url_override);
+    let session = crate::actions::build_session(&cfg, project_path, current_file);
 
     let model = if cfg.model.is_empty() {
         "unknown".into()
@@ -172,10 +194,19 @@ pub async fn handle(
         cfg.model.clone()
     };
     let mut app = App::new(&cfg, model);
-    app.history.push(ChatMessage::system(ctx.system_prompt()));
+    app.history
+        .push(ChatMessage::system(session.ctx.system_prompt()));
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app, provider, registry, cfg, cwd).await;
+    let result = run(
+        &mut terminal,
+        &mut app,
+        session.provider,
+        session.registry,
+        cfg,
+        session.cwd,
+    )
+    .await;
     ratatui::restore();
     result
 }
@@ -188,14 +219,13 @@ async fn run(
     cfg: Config,
     cwd: std::path::PathBuf,
 ) -> Result<()> {
-    let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (mut ev_tx, mut ev_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
     loop {
         terminal.draw(|frame| draw(frame, app))?;
         while let Ok(ev) = ev_rx.try_recv() {
             match ev {
                 AgentEvent::AssistantTextDelta(d) => {
-                    // The answer is starting: collapse the live thinking block.
                     app.reasoning.clear();
                     app.push_delta(&d);
                 }
@@ -205,7 +235,6 @@ async fn run(
                 }
                 AgentEvent::AssistantTextDone => app.end_assistant(),
                 AgentEvent::ToolCallRequested { name, args } => {
-                    // A tool call also ends the thinking phase for this step.
                     app.reasoning.clear();
                     app.push(Role::Tool, format!("{name}: {}", summarize_args(&args)));
                 }
@@ -232,7 +261,6 @@ async fn run(
                     app.thinking = false;
                     app.end_assistant();
                     app.reasoning.clear();
-                    // If the turn aborted mid-approval, release the keyboard.
                     app.pending_approval = None;
                     app.push(Role::Error, msg);
                 }
@@ -246,10 +274,9 @@ async fn run(
                     app.thinking = false;
                     app.end_assistant();
                     app.reasoning.clear();
-                    // The turn is over: drop its approval sender and any stale
-                    // prompt (re-armed on the next turn).
                     app.appr_tx = None;
                     app.pending_approval = None;
+                    app.agent_task = None;
                 }
             }
         }
@@ -263,10 +290,12 @@ async fn run(
         if key.kind != KeyEventKind::Press {
             continue;
         }
-        // While a tool call awaits approval, the prompt owns the keyboard: a
-        // y/n/a (or Enter/Esc) resolves it and every other key is swallowed, so
-        // normal typing and quit can't slip past the decision.
         if app.pending_approval.is_some() {
+            if key.code == KeyCode::Esc {
+                app.stop_turn();
+                (ev_tx, ev_rx) = mpsc::unbounded_channel();
+                continue;
+            }
             if let Some(decision) = app.approval_key(key.code) {
                 if let Some(tx) = &app.appr_tx {
                     let _ = tx.send(decision);
@@ -283,8 +312,13 @@ async fn run(
             continue; // swallow all keys while a prompt is pending
         }
         match key.code {
-            KeyCode::Esc => break,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+            KeyCode::Esc => {
+                if app.thinking {
+                    app.stop_turn();
+                    (ev_tx, ev_rx) = mpsc::unbounded_channel();
+                }
+            }
             KeyCode::Enter => {
                 if app.thinking || app.input.trim().is_empty() {
                     continue;
@@ -319,7 +353,7 @@ async fn run(
                 let cwd = cwd.clone();
                 // Capture the thinking toggle for this request.
                 let think = app.think;
-                tokio::spawn(async move {
+                let handle = tokio::spawn(async move {
                     let new_turns = agent::run_agent(
                         provider,
                         registry,
@@ -334,6 +368,7 @@ async fn run(
                     .await;
                     let _ = ev_tx.send(AgentEvent::TurnComplete(new_turns));
                 });
+                app.agent_task = Some(handle);
             }
             // Tab and Ctrl+I (which most terminals deliver as Tab) reveal the
             // endpoint in the status bar.
@@ -405,7 +440,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // Transcript pane. Text is pre-wrapped so the scroll offset is exact.
     let width = msg_area.width.saturating_sub(2).max(1) as usize;
     let viewport = msg_area.height.saturating_sub(2) as usize;
-    let mut lines = message_lines(&app.messages, width, app.thinking);
+    let mut lines = app.transcript_lines(width);
     // Live chain-of-thought: a transient dimmed block below the transcript that
     // collapses once the answer streams (see the event loop).
     if !app.reasoning.is_empty() {
@@ -453,18 +488,15 @@ fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn status_line(app: &App) -> String {
-    // Collapsed: just the model. Tab/Ctrl+I expands the connection details.
-    let mut status = format!(" {}", app.model);
-    if !app.think {
-        // Only surfaced when off, keeping the default chrome minimal.
-        status.push_str(" | no-think");
-    }
+    // Collapsed: just the model and the think checkbox. Tab/Ctrl+I expands the
+    // connection details.
+    let check = if app.think { 'x' } else { ' ' };
+    let mut status = format!(" {}  [{check}] think", app.model);
     if app.show_details {
         status.push_str(&format!(" | {}", app.endpoint));
     }
-    if app.thinking {
-        status.push_str(" | thinking…");
-    }
+    // The busy state is shown by the boat animation, not text — so the status
+    // bar never prints "thinking…"; only the model's real chain-of-thought does.
     status
 }
 
@@ -501,7 +533,7 @@ const BIRD_SPEED: f64 = 2.5;
 /// How much faster the whole scene drifts while a reply is pending. The drift
 /// phase is accumulated (see `anim_step`), so this only changes the *rate* — the
 /// scene accelerates from its current position rather than jumping.
-const THINK_SPEEDUP: f64 = 4.0;
+const THINK_SPEEDUP: f64 = 7.0;
 
 /// Advance the accumulated drift phase by one frame's `dt` seconds, scaled up
 /// while `thinking`. `dt` is clamped so a delayed frame can't lurch the scene.
@@ -677,9 +709,10 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 }
 
 /// Render the transcript as styled lines: a label per message, its wrapped
-/// content, and a trailing blank line, plus a "thinking…" tail while a reply
-/// is pending.
-fn message_lines(messages: &[DisplayMessage], width: usize, thinking: bool) -> Vec<Line<'static>> {
+/// content, and a trailing blank line. The "busy" state is conveyed solely by
+/// the drifting boat banner, not by any text here; only the model's actual
+/// chain-of-thought gets a "thinking…" block (see [`reasoning_lines`]).
+fn message_lines(messages: &[DisplayMessage], width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for message in messages {
         // System notes are unlabelled, dimmed italic asides.
@@ -729,14 +762,6 @@ fn message_lines(messages: &[DisplayMessage], width: usize, thinking: bool) -> V
         }
         lines.push(Line::default());
     }
-    if thinking {
-        lines.push(Line::from(Span::styled(
-            "thinking…",
-            Style::new()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        )));
-    }
     lines
 }
 
@@ -762,6 +787,39 @@ mod tests {
         assert_eq!(app.messages.last().unwrap().role, Role::Assistant);
     }
 
+    #[tokio::test]
+    async fn stop_turn_aborts_the_task_and_resets_turn_state() {
+        let cfg = Config::default();
+        let mut app = App::new(&cfg, "m".into());
+        // Stand up a turn that's mid-stream: a running task, a live bubble, some
+        // reasoning, and a pending approval prompt.
+        app.thinking = true;
+        app.begin_assistant();
+        app.push_delta("partial");
+        app.reasoning.push_str("thinking…");
+        let (appr_tx, _appr_rx) = mpsc::unbounded_channel();
+        app.appr_tx = Some(appr_tx);
+        app.pending_approval = Some(PendingApproval {
+            name: "shell".into(),
+            args: "{}".into(),
+        });
+        let handle = tokio::spawn(async { std::future::pending::<()>().await });
+        app.agent_task = Some(handle);
+
+        app.stop_turn();
+
+        // Every transient turn marker is cleared and the task is dropped.
+        assert!(!app.thinking);
+        assert!(app.streaming_idx.is_none());
+        assert!(app.reasoning.is_empty());
+        assert!(app.appr_tx.is_none());
+        assert!(app.pending_approval.is_none());
+        assert!(app.agent_task.is_none());
+        // A "Stopped." note is left in the transcript.
+        assert_eq!(app.messages.last().unwrap().role, Role::System);
+        assert_eq!(app.messages.last().unwrap().content, "Stopped.");
+    }
+
     #[test]
     fn approval_keys_map_to_decisions() {
         let cfg = Config::default();
@@ -782,7 +840,7 @@ mod tests {
             app.approval_key(KeyCode::Char('n')),
             Some(ApprovalDecision::Deny)
         );
-        assert_eq!(app.approval_key(KeyCode::Esc), Some(ApprovalDecision::Deny));
+        assert_eq!(app.approval_key(KeyCode::Esc), None);
         assert_eq!(app.approval_key(KeyCode::Char('z')), None);
     }
 
@@ -792,7 +850,7 @@ mod tests {
             role: Role::Tool,
             content: "shell: ls -la".into(),
         }];
-        let lines = message_lines(&messages, 80, false);
+        let lines = message_lines(&messages, 80);
         assert!(
             lines
                 .iter()
@@ -812,7 +870,7 @@ mod tests {
                 content: "denied shell".into(),
             },
         ];
-        let lines = message_lines(&messages, 80, false);
+        let lines = message_lines(&messages, 80);
         // Tool lines are yellow and arrow-prefixed.
         let tool_line = lines
             .iter()
@@ -862,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn message_lines_labels_roles_and_appends_thinking() {
+    fn message_lines_labels_roles_without_busy_text() {
         let messages = vec![
             DisplayMessage {
                 role: Role::User,
@@ -873,16 +931,12 @@ mod tests {
                 content: "hello".into(),
             },
         ];
-        let lines = message_lines(&messages, 80, true);
-        // label + content + blank per message, plus the thinking tail
-        assert_eq!(lines.len(), 7);
+        let lines = message_lines(&messages, 80);
+        assert_eq!(lines.len(), 6);
         assert_eq!(lines[0].to_string(), "You:");
         assert_eq!(lines[1].to_string(), "hi");
         assert_eq!(lines[3].to_string(), "Odysseus:");
-        assert_eq!(lines[6].to_string(), "thinking…");
-
-        let without = message_lines(&messages, 80, false);
-        assert_eq!(without.len(), 6);
+        assert!(lines.iter().all(|l| l.to_string() != "thinking…"));
     }
 
     #[test]
@@ -1137,14 +1191,14 @@ mod tests {
             role: Role::System,
             content: "Started a new session.".into(),
         }];
-        let lines = message_lines(&messages, 80, false);
+        let lines = message_lines(&messages, 80);
         // System notes have no "Label:" prefix — just the dimmed content.
         assert!(lines.iter().all(|l| l.to_string() != "System:"));
         assert_eq!(lines[0].to_string(), "Started a new session.");
     }
 
     #[test]
-    fn status_line_is_just_the_model_by_default() {
+    fn status_line_shows_model_and_think_checkbox_by_default() {
         let cfg = Config::default();
         let mut app = App::new(&cfg, "qwen3".into());
         let line = status_line(&app);
@@ -1153,19 +1207,18 @@ mod tests {
         assert!(!line.contains("model:"));
         assert!(!line.contains("session"));
         assert!(!line.contains("localhost"));
-        assert!(!line.contains("thinking"));
+        assert!(!line.contains("thinking…"));
         app.thinking = true;
-        assert!(status_line(&app).contains("thinking…"));
+        assert!(!status_line(&app).contains("thinking…"));
     }
 
     #[test]
-    fn status_line_shows_no_think_only_when_disabled() {
+    fn status_line_think_checkbox_reflects_toggle() {
         let cfg = Config::default();
         let mut app = App::new(&cfg, "qwen3".into());
-        // Default (think on) shows no marker.
-        assert!(!status_line(&app).contains("no-think"));
-        app.think = false;
-        assert!(status_line(&app).contains("no-think"));
+        assert!(status_line(&app).contains("[ ] think"));
+        app.think = true;
+        assert!(status_line(&app).contains("[x] think"));
     }
 
     #[test]
