@@ -20,6 +20,10 @@ pub(super) enum Role {
     /// A local note from the client itself (e.g. after `/clear`), shown
     /// dimmed and without a speaker label.
     System,
+    /// A prompt that needs the user's input now (e.g. a tool-approval
+    /// `[y]/[n]/[a]` question). Rendered as a bold, highlighted line so it
+    /// stands out from the dimmed system/thinking asides instead of blending in.
+    Prompt,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +65,10 @@ pub(super) struct App {
     pub(super) reasoning: String,
     /// Whether the next request lets the model think. Toggled with Ctrl+T.
     pub(super) think: bool,
+    /// Set by a first Ctrl+C and cleared by any other key. While set, the status
+    /// bar prompts "Press Ctrl+C again to quit" and a second Ctrl+C exits, so a
+    /// single stray press can't drop the session by accident.
+    pub(super) quit_armed: bool,
     /// Start time, used for the steady, mode-independent bird wing-beat.
     pub(super) started: Instant,
     /// Accumulated drift phase for the scrolling sky and waves. Advanced each
@@ -95,6 +103,7 @@ impl App {
             pending_approval: None,
             reasoning: String::new(),
             think: false,
+            quit_armed: false,
             started: Instant::now(),
             anim_phase: 0.0,
             last_tick: Instant::now(),

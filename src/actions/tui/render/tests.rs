@@ -162,6 +162,25 @@ fn message_lines_renders_system_note_without_label() {
 }
 
 #[test]
+fn message_lines_highlights_approval_prompt() {
+    let messages = vec![DisplayMessage {
+        role: Role::Prompt,
+        content: "approve shell ls? [y]es / [n]o / [a]lways".into(),
+    }];
+    let lines = message_lines(&messages, 80);
+    let prompt = lines
+        .iter()
+        .find(|l| l.to_string().contains("approve shell"))
+        .unwrap();
+    // The prompt must stand out from the dimmed System asides: bold, with a
+    // black-on-yellow highlight rather than DarkGray.
+    let span = prompt.spans.first().unwrap();
+    assert_eq!(span.style.fg, Some(Color::Black));
+    assert_eq!(span.style.bg, Some(Color::Yellow));
+    assert!(span.style.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
 fn status_line_shows_model_and_think_checkbox_by_default() {
     let cfg = Config::default();
     let mut app = App::new(&cfg, "qwen3".into());
@@ -174,6 +193,26 @@ fn status_line_shows_model_and_think_checkbox_by_default() {
     assert!(!line.contains("thinking…"));
     app.thinking = true;
     assert!(!status_line(&app).contains("thinking…"));
+}
+
+#[test]
+fn quit_armed_shows_confirmation_in_status_bar() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let cfg = Config::default();
+    let mut app = App::new(&cfg, "qwen3".into());
+    app.quit_armed = true;
+
+    let area = Rect::new(0, 0, 60, 10);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+
+    // The bottom row carries the quit confirmation on a yellow highlight.
+    let bottom = area.height - 1;
+    let row: String = (0..area.width).map(|x| buf[(x, bottom)].symbol()).collect();
+    assert!(row.contains("Press Ctrl+C again to quit"), "got: {row:?}");
+    assert_eq!(buf[(1, bottom)].bg, Color::Yellow);
 }
 
 #[test]

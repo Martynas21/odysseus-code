@@ -84,7 +84,7 @@ async fn run(
                 AgentEvent::ApprovalRequired { name, args } => {
                     let pending = PendingApproval { name, args };
                     app.push(
-                        Role::System,
+                        Role::Prompt,
                         format!(
                             "approve {} {}? [y]es / [n]o / [a]lways",
                             pending.name,
@@ -154,8 +154,18 @@ async fn run(
             }
             continue; // swallow all keys while a prompt is pending
         }
+        // Quitting takes two Ctrl+C presses: the first arms the prompt, a second
+        // confirms. Any other key disarms it, so a stray press can't drop the
+        // session.
+        if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if app.quit_armed {
+                break;
+            }
+            app.quit_armed = true;
+            continue;
+        }
+        app.quit_armed = false;
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
             KeyCode::Esc => {
                 if app.thinking {
                     app.stop_turn();

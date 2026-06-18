@@ -93,11 +93,20 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     let cursor_x = (app.input.chars().count() as u16).min(input_area.width.saturating_sub(2));
     frame.set_cursor_position((input_area.x + 1 + cursor_x, input_area.y + 1));
 
-    // Status bar.
-    frame.render_widget(
-        Paragraph::new(status_line(app)).style(Style::new().fg(Color::Black).bg(Color::Gray)),
-        status_area,
-    );
+    // Status bar. A first Ctrl+C swaps it for a bold quit confirmation so the
+    // user sees the second press is needed before the session actually closes.
+    let (status_text, status_style) = if app.quit_armed {
+        (
+            " Press Ctrl+C again to quit".to_string(),
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (status_line(app), Style::new().fg(Color::Black).bg(Color::Gray))
+    };
+    frame.render_widget(Paragraph::new(status_text).style(status_style), status_area);
 }
 
 fn status_line(app: &App) -> String {
@@ -151,6 +160,22 @@ pub(super) fn message_lines(messages: &[DisplayMessage], width: usize) -> Vec<Li
             lines.push(Line::default());
             continue;
         }
+        // An input prompt (e.g. tool approval) is the one transcript line that
+        // demands a keypress, so it gets a bold black-on-yellow highlight that
+        // can't be mistaken for the dimmed system/thinking asides above it.
+        if message.role == Role::Prompt {
+            for row in wrap_text(&message.content, width) {
+                lines.push(Line::from(Span::styled(
+                    row,
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            lines.push(Line::default());
+            continue;
+        }
         // Tool activity is unlabelled: the first row is a bright, arrow-prefixed
         // call line; any wrapped continuation (tool output) is dimmed so the
         // call stands out from its results.
@@ -175,6 +200,7 @@ pub(super) fn message_lines(messages: &[DisplayMessage], width: usize) -> Vec<Li
             Role::Error => ("Error", Color::Red),
             Role::Tool => unreachable!("handled above"),
             Role::System => unreachable!("handled above"),
+            Role::Prompt => unreachable!("handled above"),
         };
         lines.push(Line::from(Span::styled(
             format!("{label}:"),
