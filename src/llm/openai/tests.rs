@@ -51,8 +51,6 @@ async fn chat_stream_maps_401() {
         .create_async()
         .await;
     let provider = OpenAiProvider::new(server.url(), "");
-    // Note: the Ok variant (BoxStream) is not Debug, so `unwrap_err()` won't
-    // compile here; match on the result instead.
     let err = match provider.chat_stream(req()).await {
         Ok(_) => panic!("expected error"),
         Err(e) => e,

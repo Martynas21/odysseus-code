@@ -18,7 +18,6 @@ fn policy_from_str() {
     );
 }
 
-/// A provider that replays canned event scripts, one per turn.
 struct ScriptedProvider {
     turns: Mutex<std::collections::VecDeque<Vec<StreamEvent>>>,
 }
@@ -121,13 +120,11 @@ async fn reasoning_is_surfaced_but_excluded_from_history() {
         }
     }
     assert_eq!(reasoning, "thinking…");
-    // The assistant turn keeps only the real answer, never the reasoning.
     assert_eq!(new.last().unwrap().content, "answer");
 }
 
 #[tokio::test]
 async fn read_only_tool_round_trip_auto_runs() {
-    // Turn 1: model asks to list_dir. Turn 2: model answers.
     let provider = Arc::new(ScriptedProvider::new(vec![
         vec![
             StreamEvent::ToolCallDelta {
@@ -169,7 +166,6 @@ async fn read_only_tool_round_trip_auto_runs() {
         }
     }
     assert!(started && finished);
-    // history gained: assistant(tool_call) + tool(result) + assistant(done)
     assert!(new.iter().any(|m| m.role == Role::Tool));
 }
 
@@ -220,7 +216,6 @@ async fn mutating_tool_denied_pushes_denial_message() {
 
 #[tokio::test]
 async fn exceeding_max_iterations_errors() {
-    // Every turn asks for a read-only tool, never answering — should bail.
     let turn = vec![
         StreamEvent::ToolCallDelta {
             index: 0,
@@ -230,8 +225,6 @@ async fn exceeding_max_iterations_errors() {
         },
         StreamEvent::Done,
     ];
-    // Always more turns than the loop will run, so it bails on the cap, not
-    // on the scripted provider running dry.
     let provider = Arc::new(ScriptedProvider::new(vec![turn; MAX_ITERATIONS + 1]));
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();

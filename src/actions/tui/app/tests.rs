@@ -15,8 +15,6 @@ fn streaming_delta_appends_to_open_assistant_bubble() {
 async fn stop_turn_aborts_the_task_and_resets_turn_state() {
     let cfg = Config::default();
     let mut app = App::new(&cfg, "m".into());
-    // Stand up a turn that's mid-stream: a running task, a live bubble, some
-    // reasoning, and a pending approval prompt.
     app.thinking = true;
     app.begin_assistant();
     app.push_delta("partial");
@@ -32,14 +30,12 @@ async fn stop_turn_aborts_the_task_and_resets_turn_state() {
 
     app.stop_turn();
 
-    // Every transient turn marker is cleared and the task is dropped.
     assert!(!app.thinking);
     assert!(app.streaming_idx.is_none());
     assert!(app.reasoning.is_empty());
     assert!(app.appr_tx.is_none());
     assert!(app.pending_approval.is_none());
     assert!(app.agent_task.is_none());
-    // A "Stopped." note is left in the transcript.
     assert_eq!(app.messages.last().unwrap().role, Role::System);
     assert_eq!(app.messages.last().unwrap().content, "Stopped.");
 }

@@ -22,7 +22,6 @@ fn set_persists_and_reloads() {
     cfg.save_to(&path).unwrap();
 
     let reloaded = Config::load_file(&path).unwrap();
-    // trailing slash is normalized away
     assert_eq!(reloaded.base_url, "http://example.com:9999");
     assert_eq!(reloaded.api_key, "ody_test123");
 }
@@ -60,7 +59,7 @@ fn set_and_get_new_keys() {
     let mut cfg = Config::default();
     cfg.set("base_url", "http://h:1/").unwrap();
     cfg.set("approval_policy", "auto").unwrap();
-    assert_eq!(cfg.get("base_url").unwrap(), "http://h:1"); // trailing slash trimmed
+    assert_eq!(cfg.get("base_url").unwrap(), "http://h:1");
     assert_eq!(cfg.get("approval_policy").unwrap(), "auto");
 }
 

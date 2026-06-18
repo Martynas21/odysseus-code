@@ -36,7 +36,6 @@ impl OpenAiProvider {
         Self::new(&cfg.base_url, &cfg.api_key)
     }
 
-    /// Open the SSE response, retrying once on 429/5xx at open time only.
     async fn open(&self, body: &serde_json::Value) -> Result<reqwest::Response, ProviderError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
         for attempt in 0..2 {
@@ -71,13 +70,11 @@ impl OpenAiProvider {
     }
 }
 
-/// Streaming state threaded through `stream::unfold`.
 struct StreamState {
     bytes: BoxStream<'static, reqwest::Result<bytes::Bytes>>,
     decoder: SseDecoder,
     queue: std::collections::VecDeque<Result<StreamEvent, ProviderError>>,
     finished: bool,
-    /// Endpoint URL, kept so a mid-stream transport error reports where it failed.
     url: String,
 }
 
@@ -129,10 +126,6 @@ impl Provider for OpenAiProvider {
                         st.finished = true;
                     }
                     None => {
-                        // Stream ended. Drain any final line that arrived
-                        // without a trailing newline so its payload (e.g. the
-                        // closing fragment of a tool call's arguments) isn't
-                        // dropped, then synthesize Done.
                         if let Some(data) = st.decoder.flush()
                             && data != "[DONE]"
                         {

@@ -152,11 +152,8 @@ async fn run(
                     app.push(Role::System, format!("{verb} {}", pending.name));
                 }
             }
-            continue; // swallow all keys while a prompt is pending
+            continue;
         }
-        // Quitting takes two Ctrl+C presses: the first arms the prompt, a second
-        // confirms. Any other key disarms it, so a stray press can't drop the
-        // session.
         if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
             if app.quit_armed {
                 break;
@@ -191,9 +188,6 @@ async fn run(
                 app.history.push(ChatMessage::user(text));
                 app.thinking = true;
 
-                // Each turn gets its own approval channel. The sender lives in
-                // `App` for the (Phase 6) approval UI; the receiver moves into
-                // the spawned agent task.
                 let (appr_tx, appr_rx) = mpsc::unbounded_channel::<ApprovalDecision>();
                 app.appr_tx = Some(appr_tx);
 
@@ -204,7 +198,6 @@ async fn run(
                 let policy = ApprovalPolicy::from_str(&cfg.approval_policy);
                 let agent_cfg = cfg.clone();
                 let cwd = cwd.clone();
-                // Capture the thinking toggle for this request.
                 let think = app.think;
                 let handle = tokio::spawn(async move {
                     let new_turns = agent::run_agent(
@@ -223,13 +216,10 @@ async fn run(
                 });
                 app.agent_task = Some(handle);
             }
-            // Tab and Ctrl+I (which most terminals deliver as Tab) reveal the
-            // endpoint in the status bar.
             KeyCode::Tab => app.show_details = !app.show_details,
             KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.show_details = !app.show_details;
             }
-            // Ctrl+T toggles whether the next request lets the model think.
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.think = !app.think;
             }

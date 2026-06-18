@@ -54,8 +54,6 @@ fn parse_chunk_malformed_is_bad_stream() {
 
 #[test]
 fn parse_chunk_tool_call_fragment_without_index_defaults_to_zero() {
-    // A non-conforming server omits `index` entirely; this must not abort
-    // the stream — it defaults to index 0.
     let data = r#"{"choices":[{"delta":{"tool_calls":[
         {"function":{"arguments":"}"}}]}}]}"#;
     let events = parse_chunk(data).unwrap();
@@ -72,8 +70,6 @@ fn parse_chunk_tool_call_fragment_without_index_defaults_to_zero() {
 
 #[test]
 fn parse_chunk_tool_call_continuation_fragment() {
-    // The dominant live shape: after the first fragment, continuation chunks
-    // carry only `index` + more `arguments` (no `id`, no `name`).
     let data = r#"{"choices":[{"delta":{"tool_calls":[
         {"index":0,"function":{"arguments":"\"ls\"}"}}]}}]}"#;
     let events = parse_chunk(data).unwrap();

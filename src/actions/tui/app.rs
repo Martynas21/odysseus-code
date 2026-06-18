@@ -14,15 +14,9 @@ use super::render::message_lines;
 pub(super) enum Role {
     User,
     Assistant,
-    /// A tool call or its result, rendered as an arrowed, dimmed aside.
     Tool,
     Error,
-    /// A local note from the client itself (e.g. after `/clear`), shown
-    /// dimmed and without a speaker label.
     System,
-    /// A prompt that needs the user's input now (e.g. a tool-approval
-    /// `[y]/[n]/[a]` question). Rendered as a bold, highlighted line so it
-    /// stands out from the dimmed system/thinking asides instead of blending in.
     Prompt,
 }
 
@@ -32,8 +26,6 @@ pub(super) struct DisplayMessage {
     pub(super) content: String,
 }
 
-/// A tool call awaiting the user's approval, captured so the confirmation line
-/// can name it once a key is pressed.
 pub(super) struct PendingApproval {
     pub(super) name: String,
     pub(super) args: String,
@@ -43,47 +35,21 @@ pub(super) struct App {
     pub(super) endpoint: String,
     pub(super) model: String,
     pub(super) messages: Vec<DisplayMessage>,
-    /// Authoritative conversation sent to the model (system + turns).
     pub(super) history: Vec<ChatMessage>,
     pub(super) input: String,
-    /// Scroll position measured in rows up from the bottom of the transcript.
-    /// 0 means "stick to the latest message".
     pub(super) scroll_from_bottom: usize,
     pub(super) thinking: bool,
-    /// When true, the status bar also shows the endpoint.
-    /// Toggled with Tab (Ctrl+I); off by default to keep the chrome minimal.
     pub(super) show_details: bool,
-    /// Index of the in-progress assistant bubble, if streaming.
     pub(super) streaming_idx: Option<usize>,
-    /// Approval channel back to the running agent turn, for the (Phase 6)
-    /// approval UI. Present only while a turn is in flight.
     pub(super) appr_tx: Option<mpsc::UnboundedSender<ApprovalDecision>>,
-    /// The mutating tool call currently awaiting a y/n/a keypress, if any.
     pub(super) pending_approval: Option<PendingApproval>,
-    /// Live chain-of-thought for the in-flight turn, shown dimmed and cleared
-    /// ("collapsed") once the real answer streams or the turn ends.
     pub(super) reasoning: String,
-    /// Whether the next request lets the model think. Toggled with Ctrl+T.
     pub(super) think: bool,
-    /// Set by a first Ctrl+C and cleared by any other key. While set, the status
-    /// bar prompts "Press Ctrl+C again to quit" and a second Ctrl+C exits, so a
-    /// single stray press can't drop the session by accident.
     pub(super) quit_armed: bool,
-    /// Start time, used for the steady, mode-independent bird wing-beat.
     pub(super) started: Instant,
-    /// Accumulated drift phase for the scrolling sky and waves. Advanced each
-    /// frame by the elapsed time, faster while `thinking`, so entering thinking
-    /// mode accelerates the scene from where it is instead of jumping.
     pub(super) anim_phase: f64,
-    /// Wall-clock instant of the previous frame, used to measure that elapsed
-    /// time.
     pub(super) last_tick: Instant,
-    /// Handle to the in-flight turn's agent task, kept so Esc can abort it.
     pub(super) agent_task: Option<tokio::task::JoinHandle<()>>,
-    /// Cached wrapped transcript lines, keyed by `(messages.len(), last-message
-    /// content length, width)`. The streaming bubble only ever mutates the last
-    /// message in place, so this fingerprint catches every rendering-relevant
-    /// change and lets the 50ms redraw skip re-wrapping the whole transcript.
     pub(super) transcript_cache: Option<(usize, usize, usize, Vec<Line<'static>>)>,
 }
 
@@ -128,11 +94,9 @@ impl App {
 
     pub(super) fn push(&mut self, role: Role, content: String) {
         self.messages.push(DisplayMessage { role, content });
-        // New content should be visible immediately.
         self.scroll_from_bottom = 0;
     }
 
-    /// Open a fresh assistant bubble for streaming deltas.
     pub(super) fn begin_assistant(&mut self) {
         self.messages.push(DisplayMessage {
             role: Role::Assistant,

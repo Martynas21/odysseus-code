@@ -128,9 +128,6 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_is_consistent_across_offset_args() {
-        // A full read and an explicit offset:0 read must return identical
-        // content (same normalization), so a later edit_file `old` built from
-        // either can't fail to match the other.
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "alpha\r\nbeta\n").unwrap();
         let full = ReadFile

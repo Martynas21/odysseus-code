@@ -29,7 +29,6 @@ fn message_lines_styles_tool_and_error_distinctly() {
         },
     ];
     let lines = message_lines(&messages, 80);
-    // Tool lines are yellow and arrow-prefixed.
     let tool_line = lines
         .iter()
         .find(|l| l.to_string().contains("echo hi"))
@@ -42,7 +41,6 @@ fn message_lines_styles_tool_and_error_distinctly() {
             .any(|s| s.style.fg == Some(Color::Yellow)),
         "tool call line should be yellow"
     );
-    // Error keeps its red "Error:" label.
     assert!(lines.iter().any(|l| l.to_string() == "Error:"));
     let error_label = lines.iter().find(|l| l.to_string() == "Error:").unwrap();
     assert!(
@@ -56,12 +54,10 @@ fn message_lines_styles_tool_and_error_distinctly() {
 
 #[test]
 fn summarize_args_truncates_on_char_boundary() {
-    // A long string of multi-byte chars must not panic at the 80-byte mark.
     let args = "é".repeat(200);
     let out = summarize_args(&args);
     assert!(out.ends_with('…'));
-    assert_eq!(out.chars().count(), 81); // 80 chars + ellipsis
-    // Short input is returned unchanged.
+    assert_eq!(out.chars().count(), 81);
     assert_eq!(summarize_args("{\"a\":1}"), "{\"a\":1}");
 }
 
@@ -99,12 +95,9 @@ fn message_lines_labels_roles_without_busy_text() {
 
 #[test]
 fn scroll_offset_sticks_to_bottom_and_clamps() {
-    // 10 rows in a 4-row viewport: bottom shows rows 6..10 (offset 6).
     assert_eq!(scroll_offset(10, 4, 0), 6);
     assert_eq!(scroll_offset(10, 4, 2), 4);
-    // Scrolling past the top clamps to 0.
     assert_eq!(scroll_offset(10, 4, 100), 0);
-    // Content shorter than the viewport never scrolls.
     assert_eq!(scroll_offset(3, 4, 0), 0);
     assert_eq!(scroll_offset(3, 4, 5), 0);
 }
@@ -113,11 +106,6 @@ fn scroll_offset_sticks_to_bottom_and_clamps() {
 fn boat_banner_stays_out_of_the_transcript() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    // The boat lives in its own band between the transcript and the prompt,
-    // so the conversation can never collide with it — the old overlap that
-    // tinted transcript glyphs blue is now structurally impossible. Fill the
-    // transcript with a wall of text and confirm every blue boat/water cell
-    // sits inside the band, never up among the messages.
     let cfg = Config::default();
     let mut app = App::new(&cfg, "m".into());
     for _ in 0..60 {
@@ -129,8 +117,6 @@ fn boat_banner_stays_out_of_the_transcript() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let buf = terminal.backend().buffer();
 
-    // The three fixed-height regions sit at the foot, so the boat band is the
-    // BOAT_BAND_HEIGHT rows above the prompt (3) and status (1).
     let band_bottom = area.height - 1 - 3;
     let band_top = band_bottom - BOAT_BAND_HEIGHT;
 
@@ -156,7 +142,6 @@ fn message_lines_renders_system_note_without_label() {
         content: "Started a new session.".into(),
     }];
     let lines = message_lines(&messages, 80);
-    // System notes have no "Label:" prefix — just the dimmed content.
     assert!(lines.iter().all(|l| l.to_string() != "System:"));
     assert_eq!(lines[0].to_string(), "Started a new session.");
 }
@@ -172,8 +157,6 @@ fn message_lines_highlights_approval_prompt() {
         .iter()
         .find(|l| l.to_string().contains("approve shell"))
         .unwrap();
-    // The prompt must stand out from the dimmed System asides: bold, with a
-    // black-on-yellow highlight rather than DarkGray.
     let span = prompt.spans.first().unwrap();
     assert_eq!(span.style.fg, Some(Color::Black));
     assert_eq!(span.style.bg, Some(Color::Yellow));
@@ -186,7 +169,6 @@ fn status_line_shows_model_and_think_checkbox_by_default() {
     let mut app = App::new(&cfg, "qwen3".into());
     let line = status_line(&app);
     assert!(line.contains("qwen3"));
-    // No labels, endpoint, or session id while collapsed.
     assert!(!line.contains("model:"));
     assert!(!line.contains("session"));
     assert!(!line.contains("localhost"));
@@ -208,7 +190,6 @@ fn quit_armed_shows_confirmation_in_status_bar() {
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let buf = terminal.backend().buffer();
 
-    // The bottom row carries the quit confirmation on a yellow highlight.
     let bottom = area.height - 1;
     let row: String = (0..area.width).map(|x| buf[(x, bottom)].symbol()).collect();
     assert!(row.contains("Press Ctrl+C again to quit"), "got: {row:?}");
@@ -232,7 +213,6 @@ fn reasoning_lines_render_capped_thinking_block() {
         .join("\n");
     let lines = reasoning_lines(&reasoning, 80);
     assert_eq!(lines[0].to_string(), "thinking…");
-    // Header + at most the tail rows (12), never the full 50.
     assert!(lines.len() <= 13);
     assert!(
         lines

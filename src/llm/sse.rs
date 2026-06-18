@@ -1,16 +1,9 @@
-/// Parse one SSE line. Returns the payload of a `data:` line (one optional
-/// leading space stripped), or `None` for comments, `event:`/`id:` lines and
-/// blanks.
 pub fn parse_sse_line(line: &str) -> Option<String> {
     let line = line.strip_suffix('\r').unwrap_or(line);
     let rest = line.strip_prefix("data:")?;
     Some(rest.strip_prefix(' ').unwrap_or(rest).to_string())
 }
 
-/// Line-buffered SSE reader. `feed` may be called with arbitrary byte splits;
-/// it returns the `data:` payloads for every line completed so far, holding any
-/// trailing partial line (raw bytes, safe across UTF-8 boundaries) until the
-/// next call.
 #[derive(Default)]
 pub struct SseDecoder {
     buf: Vec<u8>,
@@ -66,7 +59,6 @@ mod tests {
     #[test]
     fn decoder_buffers_across_chunk_boundaries() {
         let mut d = SseDecoder::new();
-        // A data line split mid-JSON across three feeds.
         assert_eq!(d.feed(b"data: {\"x\":"), Vec::<String>::new());
         assert_eq!(d.feed(b"1}"), Vec::<String>::new());
         assert_eq!(d.feed(b"\n"), vec![r#"{"x":1}"#.to_string()]);
@@ -96,11 +88,9 @@ mod tests {
 
     #[test]
     fn decoder_splits_multibyte_utf8_across_chunks() {
-        // The whole reason for buffering raw bytes: a codepoint may straddle a
-        // chunk boundary. 'é' is 0xC3 0xA9 — feed it split down the middle.
         let mut d = SseDecoder::new();
         let bytes = "data: é\n".as_bytes();
-        let split = bytes.len() - 2; // between the two bytes of 'é'
+        let split = bytes.len() - 2;
         assert!(d.feed(&bytes[..split]).is_empty());
         assert_eq!(d.feed(&bytes[split..]), vec!["é".to_string()]);
     }

@@ -1,6 +1,3 @@
-//! OpenAI-compatible streaming chat wire format: the `delta` chunk DTOs and the
-//! parser that turns one SSE data payload into [`StreamEvent`]s.
-
 use serde::Deserialize;
 
 use crate::llm::{ProviderError, StreamEvent};
@@ -23,8 +20,6 @@ struct ChunkChoice {
 struct Delta {
     #[serde(default)]
     content: Option<String>,
-    /// Chain-of-thought from reasoning models. LM Studio uses
-    /// `reasoning_content`; some servers use `reasoning`.
     #[serde(default, alias = "reasoning")]
     reasoning_content: Option<String>,
     #[serde(default)]
@@ -57,7 +52,6 @@ struct Usage {
     completion_tokens: u32,
 }
 
-/// Parse one non-`[DONE]` SSE data payload into zero or more events.
 pub(super) fn parse_chunk(data: &str) -> Result<Vec<StreamEvent>, ProviderError> {
     let chunk: ChatChunk = serde_json::from_str(data)
         .map_err(|e| ProviderError::BadStream(format!("{e} — payload: {data}")))?;

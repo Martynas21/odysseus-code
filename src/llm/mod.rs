@@ -1,8 +1,6 @@
 pub mod message;
 pub mod sse;
 
-// `Role`/`ToolCall` are part of the crate's llm surface and are consumed by the
-// agent loop in later phases; re-exported here for that use.
 #[allow(unused_imports)]
 pub use message::{ChatMessage, Role, ToolCall};
 
@@ -13,12 +11,11 @@ use futures_util::stream::BoxStream;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-/// A tool definition advertised to the model.
 #[derive(Debug, Clone)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
-    pub parameters: Value, // JSON schema
+    pub parameters: Value,
 }
 
 impl ToolDef {
@@ -34,7 +31,6 @@ impl ToolDef {
     }
 }
 
-/// One streamed completion request.
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
@@ -42,8 +38,6 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
     pub temperature: f32,
     pub max_tokens: u32,
-    /// Whether to let a reasoning model think. When false, ask the server to
-    /// skip the chain-of-thought (qwen3's `enable_thinking` soft-switch).
     pub think: bool,
 }
 
@@ -69,11 +63,9 @@ impl ChatRequest {
     }
 }
 
-/// One streamed event from a provider.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
     TextDelta(String),
-    /// A chunk of the model's chain-of-thought (reasoning models only).
     ReasoningDelta(String),
     ToolCallDelta {
         index: usize,
@@ -104,8 +96,6 @@ pub enum ProviderError {
 
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// Open a streamed completion. Errors raised here are connection/open-time
-    /// failures; mid-stream failures arrive as `Err` items in the stream.
     async fn chat_stream(
         &self,
         req: ChatRequest,
@@ -137,7 +127,6 @@ mod tests {
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["messages"][0]["content"], "hi");
         assert_eq!(body["tools"][0]["function"]["name"], "shell");
-        // Thinking on → no enable_thinking override sent.
         assert!(body.get("chat_template_kwargs").is_none());
     }
 

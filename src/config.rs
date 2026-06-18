@@ -3,29 +3,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// Persistent configuration, stored as YAML at
-/// `~/.config/odysseus-code/config.yaml` (or `$ODYSSEUS_CODE_CONFIG_DIR/config.yaml`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    /// Base URL of the OpenAI-compatible server (no `/v1` suffix).
     #[serde(alias = "endpoint")]
     pub base_url: String,
-    /// Optional bearer token. Empty = send no Authorization header (local
-    /// servers usually need none).
     pub api_key: String,
-    /// Model id to request.
     pub model: String,
-    /// Sampling temperature.
     pub temperature: f32,
-    /// Max tokens to generate per turn.
     pub max_tokens: u32,
-    /// Per-tool execution timeout (seconds).
     pub tool_timeout_secs: u64,
-    /// "prompt" (gate mutating tools), "auto" (run all), or "readonly"
-    /// (auto-run read-only, auto-deny mutating).
     pub approval_policy: String,
-    /// Language assumed when none can be inferred from the current file.
     pub default_language: String,
 }
 
@@ -57,10 +45,6 @@ impl Config {
             .unwrap_or_default()
     }
 
-    /// Load the config file, creating it with defaults on first run, then
-    /// apply `ODYSSEUS_URL` / `ODYSSEUS_API_TOKEN` env overrides (same
-    /// convention as the Odysseus integration scripts). Env values are never
-    /// written back to disk.
     pub fn load() -> Result<Self> {
         let mut cfg = Self::load_file(&config_path()?)?;
         for var in ["ODYSSEUS_BASE_URL", "ODYSSEUS_URL"] {
@@ -80,8 +64,6 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Load exactly what is on disk (no env overrides). Used by `config set`
-    /// so environment values are not accidentally persisted.
     pub fn load_file(path: &Path) -> Result<Self> {
         if !path.exists() {
             let cfg = Self::default();
@@ -98,12 +80,9 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("creating config directory {}", dir.display()))?;
-            // The config holds an `ody_…` token, so keep the directory private.
             restrict_permissions(dir, 0o700)?;
         }
         let yaml = serde_yaml::to_string(self)?;
-        // Create the file already private (0600 on unix) so the secret API
-        // token is never momentarily world-readable between write and chmod.
         write_file_private(path, &yaml)?;
         Ok(())
     }
@@ -149,14 +128,12 @@ impl Config {
     pub fn get(&self, key: &str) -> Result<String> {
         let value = serde_yaml::to_value(self).expect("Config serializes");
         let mapping = value.as_mapping().expect("Config serializes to a mapping");
-        let scalar = mapping
-            .get(serde_yaml::Value::from(key))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown config key '{key}' (valid keys: {})",
-                    Self::keys().join(", ")
-                )
-            })?;
+        let scalar = mapping.get(serde_yaml::Value::from(key)).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown config key '{key}' (valid keys: {})",
+                Self::keys().join(", ")
+            )
+        })?;
         Ok(match scalar {
             serde_yaml::Value::String(s) => s.clone(),
             serde_yaml::Value::Number(n) => n.to_string(),
@@ -167,9 +144,6 @@ impl Config {
     }
 }
 
-/// Write `contents` to `path`, creating the file private to the owner (0600 on
-/// unix) so the API token is never momentarily world-readable. An existing file
-/// keeps its old mode through `OpenOptions`, so it is re-secured afterward too.
 fn write_file_private(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
@@ -188,7 +162,6 @@ fn write_file_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Restrict a config path (dir or file) to the owner. No-op on non-unix.
 fn restrict_permissions(path: &Path, mode: u32) -> Result<()> {
     #[cfg(unix)]
     {

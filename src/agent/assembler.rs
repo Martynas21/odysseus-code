@@ -9,7 +9,6 @@ struct PartialCall {
     arguments: String,
 }
 
-/// Reassembles streamed tool-call fragments keyed by their `index`.
 #[derive(Default)]
 pub struct ToolCallAssembler {
     calls: BTreeMap<usize, PartialCall>,

@@ -1,7 +1,3 @@
-//! The agent loop: stream assistant text, reassemble tool calls, execute them
-//! (gating mutating tools per the approval policy), and loop until the model
-//! answers with no tool calls.
-
 use std::path::Path;
 use std::sync::Arc;
 
@@ -16,16 +12,12 @@ use crate::tools::{Safety, ToolRegistry};
 mod assembler;
 use assembler::ToolCallAssembler;
 
-/// Give up after this many model turns in a single user request.
 const MAX_ITERATIONS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalPolicy {
-    /// Prompt before mutating tools; auto-run read-only.
     Prompt,
-    /// Run everything without prompting.
     Auto,
-    /// Auto-run read-only; auto-deny mutating.
     ReadOnly,
 }
 
@@ -50,7 +42,6 @@ pub enum ApprovalDecision {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     AssistantTextDelta(String),
-    /// A chunk of the model's chain-of-thought (display-only; not kept in history).
     ReasoningDelta(String),
     AssistantTextDone,
     ToolCallRequested {
@@ -71,14 +62,9 @@ pub enum AgentEvent {
     },
     Error(String),
     Done,
-    /// Terminal message carrying the new turns to splice into UI history.
     TurnComplete(Vec<ChatMessage>),
 }
 
-/// Run one user turn to completion: stream assistant text, reassemble tool
-/// calls, execute them (gating mutating tools per `policy`), and loop until the
-/// model answers with no tool calls. Returns the new turns to splice into the
-/// caller's history. Errors are reported via `AgentEvent::Error`.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent(
     provider: Arc<dyn Provider>,
@@ -120,8 +106,6 @@ pub async fn run_agent(
                     text.push_str(&d);
                     let _ = ev_tx.send(AgentEvent::AssistantTextDelta(d));
                 }
-                // Reasoning is display-only — surfaced to the UI, never added to
-                // `text`/history or sent back to the model.
                 Ok(StreamEvent::ReasoningDelta(d)) => {
                     let _ = ev_tx.send(AgentEvent::ReasoningDelta(d));
                 }
