@@ -36,7 +36,6 @@ impl Tool for Grep {
         let pattern = str_arg(args, "pattern")?;
         let re = Regex::new(pattern).map_err(|e| ToolError::BadArgs(e.to_string()))?;
         let root = cwd.to_path_buf();
-        // walkdir + regex are blocking; run on a blocking thread.
         let out = tokio::task::spawn_blocking(move || {
             let mut hits = Vec::new();
             for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
@@ -46,12 +45,11 @@ impl Tool for Grep {
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                // Skip the .git directory.
                 if entry.path().components().any(|c| c.as_os_str() == ".git") {
                     continue;
                 }
                 let Ok(text) = std::fs::read_to_string(entry.path()) else {
-                    continue; // skip binary / non-utf8
+                    continue;
                 };
                 let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
                 for (n, line) in text.lines().enumerate() {

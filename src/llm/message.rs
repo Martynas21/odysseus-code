@@ -21,8 +21,6 @@ impl Role {
     }
 }
 
-/// One reassembled tool call. `arguments` is the raw JSON string the model
-/// emitted (parsed only at execution time).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
     pub id: String,
@@ -30,7 +28,6 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// A single conversation turn. Mirrors the OpenAI chat message shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
     pub role: Role,
@@ -63,7 +60,6 @@ impl ChatMessage {
         }
     }
 
-    /// Serialize to the OpenAI `/v1/chat/completions` message wire shape.
     pub fn to_wire(&self) -> Value {
         let mut obj = serde_json::Map::new();
         obj.insert("role".into(), self.role.wire().into());

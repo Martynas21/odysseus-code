@@ -80,15 +80,8 @@ impl ToolRegistry {
             .find(|t| t.name() == name)
             .map(|b| b.as_ref())
     }
-
-    pub fn safety(&self, name: &str) -> Option<Safety> {
-        self.get(name).map(|t| t.safety())
-    }
 }
 
-/// Resolve `rel` (a tool-supplied path) against the workspace `cwd`, then
-/// canonicalize and verify it stays inside the workspace. The parent of a
-/// not-yet-existing file is checked instead, so writes to new files are allowed.
 pub fn resolve_in_repo(cwd: &Path, rel: &str) -> Result<PathBuf, ToolError> {
     let root = cwd
         .canonicalize()
@@ -99,10 +92,6 @@ pub fn resolve_in_repo(cwd: &Path, rel: &str) -> Result<PathBuf, ToolError> {
             .canonicalize()
             .map_err(|e| ToolError::Io(e.to_string()))?
     } else {
-        // The target does not exist yet (a write to a new file, possibly under
-        // not-yet-created parent dirs). Canonicalize the nearest existing
-        // ancestor, then re-append the trailing components so containment can
-        // still be checked. Reject any path that resolves outside `root`.
         let mut ancestor = joined.as_path();
         let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
         let real = loop {
@@ -125,21 +114,18 @@ pub fn resolve_in_repo(cwd: &Path, rel: &str) -> Result<PathBuf, ToolError> {
         }
         check
     };
-    // `root` is already canonical, so it is the containment prefix directly.
     if !check.starts_with(&root) {
         return Err(ToolError::PathEscape(rel.to_string()));
     }
     Ok(check)
 }
 
-/// Extract a required string argument from a tool's JSON args.
 pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::BadArgs(format!("missing string '{key}'")))
 }
 
-/// Truncate tool output so a runaway command can't flood the model context.
 pub(crate) fn truncate(s: String, max: usize) -> String {
     if s.len() <= max {
         s
@@ -181,8 +167,11 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"shell"));
-        assert_eq!(reg.safety("read_file"), Some(Safety::ReadOnly));
-        assert_eq!(reg.safety("shell"), Some(Safety::Mutating));
-        assert_eq!(reg.safety("nope"), None);
+        assert_eq!(
+            reg.get("read_file").map(|t| t.safety()),
+            Some(Safety::ReadOnly)
+        );
+        assert_eq!(reg.get("shell").map(|t| t.safety()), Some(Safety::Mutating));
+        assert!(reg.get("nope").is_none());
     }
 }

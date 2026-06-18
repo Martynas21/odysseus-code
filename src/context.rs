@@ -1,21 +1,13 @@
 use std::path::Path;
 
-/// Workspace facts used to build the agent's one-time system prompt (see
-/// [`PromptContext::system_prompt`]) so the model acts as a coding agent
-/// grounded in this repository rather than a generic chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptContext {
-    /// Absolute path of the workspace (defaults to ".").
     pub project_path: String,
-    /// Full path of the file being edited, if any.
     pub current_file: Option<String>,
-    /// Programming-language context.
     pub language: String,
 }
 
 impl PromptContext {
-    /// Build the context from CLI flags and config. Language is inferred from
-    /// the current file's extension, falling back to `default_language`.
     pub fn build(
         project_path: Option<&Path>,
         current_file: Option<&Path>,
@@ -36,8 +28,6 @@ impl PromptContext {
         }
     }
 
-    /// Build the one-time system message that primes the model as a local
-    /// coding agent operating in this workspace.
     pub fn system_prompt(&self) -> String {
         let mut s = String::new();
         s.push_str(
@@ -55,8 +45,6 @@ impl PromptContext {
     }
 }
 
-/// Map a file extension to a language name understood by the model.
-/// Extend this table to support more languages.
 pub fn language_for_extension(ext: &str) -> Option<&'static str> {
     Some(match ext.to_ascii_lowercase().as_str() {
         "rs" => "rust",
@@ -112,7 +100,6 @@ mod tests {
         let sys = ctx.system_prompt();
         assert!(sys.contains("/proj"));
         assert!(sys.contains("rust"));
-        // Mentions that it can call tools and must wait for results.
         assert!(sys.to_lowercase().contains("tool"));
     }
 

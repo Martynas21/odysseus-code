@@ -41,15 +41,12 @@ impl Tool for ReadFile {
             .get("limit")
             .and_then(Value::as_u64)
             .map(|l| l as usize);
-        let selected: String = if offset == 0 && limit.is_none() {
-            text
-        } else {
-            text.lines()
-                .skip(offset)
-                .take(limit.unwrap_or(usize::MAX))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+        let selected: String = text
+            .lines()
+            .skip(offset)
+            .take(limit.unwrap_or(usize::MAX))
+            .collect::<Vec<_>>()
+            .join("\n");
         Ok(truncate(selected, MAX_OUTPUT))
     }
 }
@@ -127,6 +124,21 @@ mod tests {
             .unwrap();
         assert!(out.contains("2") && out.contains("3"));
         assert!(!out.contains("4"));
+    }
+
+    #[tokio::test]
+    async fn read_file_is_consistent_across_offset_args() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "alpha\r\nbeta\n").unwrap();
+        let full = ReadFile
+            .execute(&json!({"path": "a.txt"}), dir.path(), 5)
+            .await
+            .unwrap();
+        let sliced = ReadFile
+            .execute(&json!({"path": "a.txt", "offset": 0}), dir.path(), 5)
+            .await
+            .unwrap();
+        assert_eq!(full, sliced);
     }
 
     #[tokio::test]
