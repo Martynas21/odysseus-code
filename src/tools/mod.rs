@@ -2,6 +2,7 @@ pub mod fs_read;
 pub mod fs_write;
 pub mod search;
 pub mod shell;
+pub mod skills;
 
 use std::path::{Path, PathBuf};
 
@@ -54,10 +55,11 @@ pub trait Tool: Send + Sync {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
+    tracker: crate::skills::SkillTracker,
 }
 
 impl ToolRegistry {
-    pub fn default_set() -> Self {
+    pub fn default_set(tracker: crate::skills::SkillTracker) -> Self {
         Self {
             tools: vec![
                 Box::new(fs_read::ReadFile),
@@ -66,8 +68,25 @@ impl ToolRegistry {
                 Box::new(fs_write::EditFile),
                 Box::new(search::Grep),
                 Box::new(shell::Shell),
+                Box::new(skills::ListSkills),
+                Box::new(skills::InvokeSkill {
+                    tracker: tracker.clone(),
+                }),
+                Box::new(skills::CompleteSkillStep {
+                    tracker: tracker.clone(),
+                }),
+                Box::new(skills::AbandonSkill {
+                    tracker: tracker.clone(),
+                }),
             ],
+            tracker,
         }
+    }
+
+    /// The shared skill-progress handle these tools mutate. The agent loop reads
+    /// it to pin live progress into context, guaranteeing a single source of truth.
+    pub fn tracker(&self) -> &crate::skills::SkillTracker {
+        &self.tracker
     }
 
     pub fn defs(&self) -> Vec<ToolDef> {
@@ -161,8 +180,27 @@ mod tests {
     }
 
     #[test]
+    fn registry_includes_skill_tools() {
+        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default());
+        let defs = reg.defs();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        for expected in [
+            "list_skills",
+            "invoke_skill",
+            "complete_skill_step",
+            "abandon_skill",
+        ] {
+            assert!(names.contains(&expected), "missing tool {expected}");
+            assert_eq!(
+                reg.get(expected).map(|t| t.safety()),
+                Some(Safety::ReadOnly)
+            );
+        }
+    }
+
+    #[test]
     fn registry_exposes_defs_and_safety() {
-        let reg = ToolRegistry::default_set();
+        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default());
         let defs = reg.defs();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));

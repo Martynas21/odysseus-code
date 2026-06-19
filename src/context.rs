@@ -41,6 +41,10 @@ impl PromptContext {
             s.push_str(&format!("Current file: {file}\n"));
         }
         s.push_str(&format!("Primary language: {}\n", self.language));
+        s.push_str(
+            "\nYou also have skills: reusable, step-by-step procedures. Call list_skills \
+             to see what is available, then invoke_skill to load one and follow it.\n",
+        );
         s
     }
 }
@@ -101,6 +105,13 @@ mod tests {
         assert!(sys.contains("/proj"));
         assert!(sys.contains("rust"));
         assert!(sys.to_lowercase().contains("tool"));
+    }
+
+    #[test]
+    fn system_prompt_mentions_skills() {
+        let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
+        let sys = ctx.system_prompt();
+        assert!(sys.contains("list_skills"));
     }
 
     #[test]
