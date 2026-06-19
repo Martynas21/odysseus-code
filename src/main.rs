@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod context;
 mod llm;
+mod mode;
 mod tools;
 
 use anyhow::Result;
@@ -28,11 +29,13 @@ async fn main() -> Result<()> {
             prompt,
             yes,
             no_think,
+            mode,
         }) => {
             actions::run::handle(
                 prompt,
                 yes,
                 no_think,
+                mode::Mode::parse(&mode),
                 project_path,
                 current_file,
                 model,

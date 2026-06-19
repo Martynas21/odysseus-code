@@ -6,19 +6,40 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::app::{App, DisplayMessage, Role};
+use super::app::{App, DisplayMessage, PendingQuestion, Role};
 use super::banner::{BOAT_BAND_HEIGHT, anim_step, render_banner};
 
-pub(super) fn summarize_args(args: &str) -> String {
+use super::markdown::first_heading;
+use crate::tools::truncate_chars;
+
+pub(super) fn summarize_args(name: &str, args: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(args) {
+        let str_field = |key: &str| value.get(key).and_then(|v| v.as_str());
+        let summary = match name {
+            "write_file" => str_field("path").map(|path| {
+                let mut s = path.to_string();
+                if let Some(heading) = str_field("content").and_then(first_heading) {
+                    s.push_str(&format!(" — \"{heading}\""));
+                }
+                s
+            }),
+            "edit_file" | "read_file" | "list_dir" => str_field("path").map(|p| p.to_string()),
+            "grep" => str_field("pattern").map(|pattern| match str_field("path") {
+                Some(path) => format!("{pattern} in {path}"),
+                None => pattern.to_string(),
+            }),
+            "ask_user" => str_field("question").map(|q| q.to_string()),
+            _ => None,
+        };
+        if let Some(summary) = summary {
+            return truncate_chars(&summary, 80, "…");
+        }
+    }
     let flat: String = args
         .chars()
         .map(|c| if c == '\n' { ' ' } else { c })
         .collect();
-    if flat.chars().count() > 80 {
-        format!("{}…", flat.chars().take(80).collect::<String>())
-    } else {
-        flat
-    }
+    truncate_chars(&flat, 80, "…")
 }
 
 fn reasoning_lines(reasoning: &str, width: usize) -> Vec<Line<'static>> {
@@ -32,6 +53,66 @@ fn reasoning_lines(reasoning: &str, width: usize) -> Vec<Line<'static>> {
     for row in &rows[start..] {
         lines.push(Line::from(Span::styled(row.clone(), style)));
     }
+    lines
+}
+
+fn question_lines(pq: &PendingQuestion, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let sel_style = Style::new()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let dim_style = Style::new().fg(Color::DarkGray);
+
+    for row in wrap_text(&pq.question, width) {
+        lines.push(Line::from(Span::styled(
+            row,
+            Style::new().add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    let entry_style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let row_style = |selected: bool| if selected { sel_style } else { Style::new() };
+    let marker = |selected: bool| if selected { "> " } else { "  " };
+
+    for (i, opt) in pq.options.iter().enumerate() {
+        let selected = pq.selected == i;
+        let letter = (b'A' + (i % 26) as u8) as char;
+        let mut spans = vec![Span::styled(
+            format!("{}{letter}. {}", marker(selected), opt.label),
+            row_style(selected),
+        )];
+        if let Some(buffer) = pq.note_buffer(i) {
+            // Editing a note for this option, in place on its row.
+            spans.push(Span::styled(format!("  note: {buffer}▌"), entry_style));
+        } else if let Some(desc) = &opt.description {
+            spans.push(Span::styled(format!("  {desc}"), dim_style));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    let other_selected = pq.other_selected();
+    let other = if let Some(buffer) = pq.free_text_buffer() {
+        // Typing a free-text answer, edited in place on the Other row.
+        Line::from(vec![
+            Span::styled(format!("{}Other: ", marker(other_selected)), sel_style),
+            Span::styled(format!("{buffer}▌"), entry_style),
+        ])
+    } else {
+        Line::from(Span::styled(
+            format!("{}Other… (type your own)", marker(other_selected)),
+            row_style(other_selected),
+        ))
+    };
+    lines.push(other);
+
+    let hint = if pq.entry.is_some() {
+        "Enter to submit · Esc to go back"
+    } else {
+        "↑/↓ move · Enter select · n add note · Esc cancel"
+    };
+    lines.push(Line::from(Span::styled(hint, dim_style)));
+
+    lines.push(Line::default());
     lines
 }
 
@@ -49,6 +130,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     let mut lines = app.transcript_lines(width);
     if !app.reasoning.is_empty() {
         lines.extend(reasoning_lines(&app.reasoning, width));
+    }
+    if let Some(pq) = &app.pending_question {
+        lines.extend(question_lines(pq, width));
     }
     app.scroll_from_bottom = app
         .scroll_from_bottom
@@ -98,7 +182,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
 
 fn status_line(app: &App) -> String {
     let check = if app.think { 'x' } else { ' ' };
-    let mut status = format!(" {}  [{check}] think", app.model);
+    let mut status = format!(
+        " {}  mode: {} (Shift+Tab)  [{check}] think",
+        app.model,
+        app.mode.label()
+    );
     if app.show_details {
         status.push_str(&format!(" | {}", app.endpoint));
     }

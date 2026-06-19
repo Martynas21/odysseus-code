@@ -6,6 +6,24 @@ mod highlight;
 
 const CODE_BG: Color = Color::Rgb(40, 44, 52);
 
+/// Return the text of the first Markdown heading (any level), if any. Uses the
+/// same parser as `render`, so it recognises `#`, `##`, setext, etc.
+pub(super) fn first_heading(content: &str) -> Option<String> {
+    let parser = Parser::new(content);
+    let mut in_heading = false;
+    let mut text = String::new();
+    for event in parser {
+        match event {
+            Event::Start(Tag::Heading { .. }) => in_heading = true,
+            Event::Text(t) | Event::Code(t) if in_heading => text.push_str(&t),
+            Event::End(TagEnd::Heading(_)) if in_heading => break,
+            _ => {}
+        }
+    }
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 pub(super) fn render(content: &str, width: usize) -> Vec<Line<'static>> {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);

@@ -55,10 +55,27 @@ fn message_lines_styles_tool_and_error_distinctly() {
 #[test]
 fn summarize_args_truncates_on_char_boundary() {
     let args = "é".repeat(200);
-    let out = summarize_args(&args);
+    let out = summarize_args("unknown_tool", &args);
     assert!(out.ends_with('…'));
     assert_eq!(out.chars().count(), 81);
-    assert_eq!(summarize_args("{\"a\":1}"), "{\"a\":1}");
+    assert_eq!(summarize_args("unknown_tool", "{\"a\":1}"), "{\"a\":1}");
+}
+
+#[test]
+fn summarize_args_shows_path_and_title_for_write_file() {
+    let out = summarize_args(
+        "write_file",
+        "{\"path\":\"docs/edds/test-coverage.md\",\"content\":\"# Test Coverage\\nbody\"}",
+    );
+    assert!(out.contains("docs/edds/test-coverage.md"));
+    assert!(out.contains("Test Coverage"));
+    assert!(!out.contains("content"));
+}
+
+#[test]
+fn summarize_args_shows_pattern_for_grep() {
+    let out = summarize_args("grep", "{\"pattern\":\"fn main\",\"path\":\"src\"}");
+    assert!(out.contains("fn main"));
 }
 
 #[test]

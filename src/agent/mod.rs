@@ -40,6 +40,15 @@ pub enum ApprovalDecision {
 }
 
 #[derive(Debug, Clone)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuestionAnswer(pub String);
+
+#[derive(Debug, Clone)]
 pub enum AgentEvent {
     AssistantTextDelta(String),
     ReasoningDelta(String),
@@ -51,6 +60,10 @@ pub enum AgentEvent {
     ApprovalRequired {
         name: String,
         args: String,
+    },
+    QuestionRaised {
+        question: String,
+        options: Vec<QuestionOption>,
     },
     ToolStarted {
         name: String,
@@ -65,6 +78,47 @@ pub enum AgentEvent {
     TurnComplete(Vec<ChatMessage>),
 }
 
+/// Parse `ask_user` arguments into a question and selectable options. Lenient:
+/// an option missing a `label` falls back to its `description`, then to
+/// `Option N`, so a malformed option is never silently dropped.
+fn parse_question(arguments: &str) -> (String, Vec<QuestionOption>) {
+    let parsed: serde_json::Value =
+        serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
+    let question = parsed
+        .get("question")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let options = parsed
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .map(|(i, o)| {
+                    let label = o.get("label").and_then(|v| v.as_str());
+                    let description = o.get("description").and_then(|v| v.as_str());
+                    // Fall back so a malformed option is never silently dropped:
+                    // label → description → positional placeholder.
+                    match label {
+                        Some(label) => QuestionOption {
+                            label: label.to_string(),
+                            description: description.map(String::from),
+                        },
+                        None => QuestionOption {
+                            label: description
+                                .map(String::from)
+                                .unwrap_or_else(|| format!("Option {}", i + 1)),
+                            description: None,
+                        },
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (question, options)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent(
     provider: Arc<dyn Provider>,
@@ -72,10 +126,12 @@ pub async fn run_agent(
     mut history: Vec<ChatMessage>,
     ev_tx: mpsc::UnboundedSender<AgentEvent>,
     mut approvals: mpsc::UnboundedReceiver<ApprovalDecision>,
+    mut questions: mpsc::UnboundedReceiver<QuestionAnswer>,
     cfg: &Config,
     cwd: &Path,
     mut policy: ApprovalPolicy,
     think: bool,
+    interactive: bool,
 ) -> Vec<ChatMessage> {
     let base_len = history.len();
     let tools = registry.defs();
@@ -150,12 +206,41 @@ pub async fn run_agent(
         }
 
         for call in calls {
+            let tool = registry.get(&call.name);
+
+            // Interactive tools (e.g. ask_user) are handled by blocking for user
+            // input rather than executing. The interactive panel is the display
+            // surface, so we do not emit a ToolCallRequested row for them.
+            if tool.is_some_and(|t| t.interactive()) {
+                let (question, options) = parse_question(&call.arguments);
+                let answer = if interactive {
+                    let _ = ev_tx.send(AgentEvent::QuestionRaised { question, options });
+                    match questions.recv().await {
+                        Some(QuestionAnswer(a)) => a,
+                        None => "The user dismissed the question without answering.".to_string(),
+                    }
+                } else {
+                    "No interactive user is available to answer. Do not invent an answer — \
+                     record the open question in your reply (or in the spec document) and \
+                     continue only with what is known."
+                        .to_string()
+                };
+
+                history.push(ChatMessage::tool_result(&call.id, &answer));
+                let _ = ev_tx.send(AgentEvent::ToolFinished {
+                    name: call.name.clone(),
+                    output: answer,
+                    ok: true,
+                });
+                continue;
+            }
+
             let _ = ev_tx.send(AgentEvent::ToolCallRequested {
                 name: call.name.clone(),
                 args: call.arguments.clone(),
             });
 
-            let Some(tool) = registry.get(&call.name) else {
+            let Some(tool) = tool else {
                 let msg = format!("unknown tool '{}'", call.name);
                 history.push(ChatMessage::tool_result(&call.id, &msg));
                 let _ = ev_tx.send(AgentEvent::ToolFinished {
