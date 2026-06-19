@@ -6,6 +6,26 @@ use futures_util::stream::{self, BoxStream};
 use std::sync::Mutex;
 
 #[test]
+fn parse_question_falls_back_when_label_missing() {
+    let (q, opts) = parse_question(
+        r#"{"question":"Pick","options":[
+            {"label":"A","description":"first"},
+            {"description":"only a description"},
+            {}
+        ]}"#,
+    );
+    assert_eq!(q, "Pick");
+    assert_eq!(opts.len(), 3);
+    assert_eq!(opts[0].label, "A");
+    assert_eq!(opts[0].description.as_deref(), Some("first"));
+    // missing label promotes the description to the label
+    assert_eq!(opts[1].label, "only a description");
+    assert_eq!(opts[1].description, None);
+    // neither present → positional placeholder
+    assert_eq!(opts[2].label, "Option 3");
+}
+
+#[test]
 fn policy_from_str() {
     assert_eq!(ApprovalPolicy::from_str("auto"), ApprovalPolicy::Auto);
     assert_eq!(
@@ -58,6 +78,7 @@ async fn plain_answer_emits_text_and_done() {
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
     let history = vec![ChatMessage::system("sys"), ChatMessage::user("hi")];
 
     let new = run_agent(
@@ -66,9 +87,11 @@ async fn plain_answer_emits_text_and_done() {
         history,
         tx,
         arx,
+        qrx,
         &cfg(),
         Path::new("."),
         ApprovalPolicy::Auto,
+        true,
         true,
     )
     .await;
@@ -98,6 +121,7 @@ async fn reasoning_is_surfaced_but_excluded_from_history() {
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
     let history = vec![ChatMessage::user("q")];
 
     let new = run_agent(
@@ -106,9 +130,11 @@ async fn reasoning_is_surfaced_but_excluded_from_history() {
         history,
         tx,
         arx,
+        qrx,
         &cfg(),
         Path::new("."),
         ApprovalPolicy::Auto,
+        true,
         true,
     )
     .await;
@@ -140,6 +166,7 @@ async fn read_only_tool_round_trip_auto_runs() {
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
     let dir = tempfile::tempdir().unwrap();
     let history = vec![ChatMessage::user("look around")];
 
@@ -149,9 +176,11 @@ async fn read_only_tool_round_trip_auto_runs() {
         history,
         tx,
         arx,
+        qrx,
         &cfg(),
         dir.path(),
         ApprovalPolicy::Prompt,
+        true,
         true,
     )
     .await;
@@ -186,6 +215,7 @@ async fn mutating_tool_denied_pushes_denial_message() {
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
     atx.send(ApprovalDecision::Deny).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let history = vec![ChatMessage::user("run it")];
@@ -196,9 +226,11 @@ async fn mutating_tool_denied_pushes_denial_message() {
         history,
         tx,
         arx,
+        qrx,
         &cfg(),
         dir.path(),
         ApprovalPolicy::Prompt,
+        true,
         true,
     )
     .await;
@@ -229,6 +261,7 @@ async fn exceeding_max_iterations_errors() {
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
     let dir = tempfile::tempdir().unwrap();
     run_agent(
         provider,
@@ -236,9 +269,11 @@ async fn exceeding_max_iterations_errors() {
         vec![ChatMessage::user("go")],
         tx,
         arx,
+        qrx,
         &cfg(),
         dir.path(),
         ApprovalPolicy::Auto,
+        true,
         true,
     )
     .await;
@@ -268,6 +303,7 @@ async fn unknown_tool_fails_without_approval_prompt() {
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
     let dir = tempfile::tempdir().unwrap();
 
     let new = run_agent(
@@ -276,9 +312,11 @@ async fn unknown_tool_fails_without_approval_prompt() {
         vec![ChatMessage::user("do it")],
         tx,
         arx,
+        qrx,
         &cfg(),
         dir.path(),
         ApprovalPolicy::Prompt,
+        true,
         true,
     )
     .await;
@@ -321,6 +359,7 @@ async fn mid_stream_error_keeps_role_alternation() {
     let registry = Arc::new(ToolRegistry::default_set());
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
 
     let new = run_agent(
         provider,
@@ -328,9 +367,11 @@ async fn mid_stream_error_keeps_role_alternation() {
         vec![ChatMessage::system("sys"), ChatMessage::user("hi")],
         tx,
         arx,
+        qrx,
         &cfg(),
         Path::new("."),
         ApprovalPolicy::Auto,
+        true,
         true,
     )
     .await;
