@@ -49,6 +49,8 @@ impl Tool for AskUser {
     /// `execute`. Kept only to satisfy the trait, with a guard error in case the
     /// dispatch is ever bypassed.
     async fn execute(&self, _args: &Value, _cwd: &Path, _t: u64) -> Result<String, ToolError> {
-        Err(ToolError::Failed("ask_user is handled interactively".into()))
+        Err(ToolError::Failed(
+            "ask_user is handled interactively".into(),
+        ))
     }
 }

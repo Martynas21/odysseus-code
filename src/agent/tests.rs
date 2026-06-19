@@ -1,6 +1,7 @@
 use super::*;
 use crate::llm::ProviderError;
 use crate::llm::message::Role;
+use crate::skills::SkillTracker;
 use async_trait::async_trait;
 use futures_util::stream::{self, BoxStream};
 use std::sync::Mutex;
@@ -75,7 +76,7 @@ async fn plain_answer_emits_text_and_done() {
         StreamEvent::TextDelta(" there".into()),
         StreamEvent::Done,
     ]]));
-    let registry = Arc::new(ToolRegistry::default_set());
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
     let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
@@ -118,7 +119,7 @@ async fn reasoning_is_surfaced_but_excluded_from_history() {
         StreamEvent::TextDelta("answer".into()),
         StreamEvent::Done,
     ]]));
-    let registry = Arc::new(ToolRegistry::default_set());
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
     let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
@@ -163,7 +164,7 @@ async fn read_only_tool_round_trip_auto_runs() {
         ],
         vec![StreamEvent::TextDelta("done".into()), StreamEvent::Done],
     ]));
-    let registry = Arc::new(ToolRegistry::default_set());
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
     let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
@@ -212,7 +213,7 @@ async fn mutating_tool_denied_pushes_denial_message() {
         ],
         vec![StreamEvent::TextDelta("ok".into()), StreamEvent::Done],
     ]));
-    let registry = Arc::new(ToolRegistry::default_set());
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (atx, arx) = mpsc::unbounded_channel();
     let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
@@ -258,7 +259,7 @@ async fn exceeding_max_iterations_errors() {
         StreamEvent::Done,
     ];
     let provider = Arc::new(ScriptedProvider::new(vec![turn; MAX_ITERATIONS + 1]));
-    let registry = Arc::new(ToolRegistry::default_set());
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
     let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
@@ -300,7 +301,7 @@ async fn unknown_tool_fails_without_approval_prompt() {
         ],
         vec![StreamEvent::TextDelta("ok".into()), StreamEvent::Done],
     ]));
-    let registry = Arc::new(ToolRegistry::default_set());
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
     let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
@@ -338,6 +339,98 @@ async fn unknown_tool_fails_without_approval_prompt() {
     assert!(tool_msg.content.contains("unknown tool"));
 }
 
+struct CapturingProvider {
+    captured: Arc<Mutex<Vec<ChatMessage>>>,
+}
+#[async_trait]
+impl Provider for CapturingProvider {
+    async fn chat_stream(
+        &self,
+        req: ChatRequest,
+    ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
+        *self.captured.lock().unwrap() = req.messages.clone();
+        Ok(stream::iter(vec![Ok(StreamEvent::Done)]).boxed())
+    }
+}
+
+fn captured_text(captured: &Arc<Mutex<Vec<ChatMessage>>>) -> String {
+    captured
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn active_skill_status_is_injected_into_request() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(CapturingProvider {
+        captured: captured.clone(),
+    });
+    let tracker = SkillTracker::default();
+    tracker.start(
+        "summarize-changes",
+        &["Inspect changes".to_string(), "Write summary".to_string()],
+    );
+    let registry = Arc::new(ToolRegistry::default_set(tracker));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
+
+    run_agent(
+        provider,
+        registry,
+        vec![ChatMessage::user("hi")],
+        tx,
+        arx,
+        qrx,
+        &cfg(),
+        Path::new("."),
+        ApprovalPolicy::Auto,
+        true,
+        false,
+    )
+    .await;
+
+    let text = captured_text(&captured);
+    assert!(
+        text.contains("Skill in progress: summarize-changes"),
+        "pinned status missing from request: {text}"
+    );
+    assert!(text.contains("Inspect changes"));
+}
+
+#[tokio::test]
+async fn no_status_injected_without_active_skill() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(CapturingProvider {
+        captured: captured.clone(),
+    });
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
+
+    run_agent(
+        provider,
+        registry,
+        vec![ChatMessage::user("hi")],
+        tx,
+        arx,
+        qrx,
+        &cfg(),
+        Path::new("."),
+        ApprovalPolicy::Auto,
+        true,
+        false,
+    )
+    .await;
+
+    assert!(!captured_text(&captured).contains("Skill in progress"));
+}
+
 struct MidStreamErrorProvider;
 #[async_trait]
 impl Provider for MidStreamErrorProvider {
@@ -356,7 +449,7 @@ impl Provider for MidStreamErrorProvider {
 #[tokio::test]
 async fn mid_stream_error_keeps_role_alternation() {
     let provider = Arc::new(MidStreamErrorProvider);
-    let registry = Arc::new(ToolRegistry::default_set());
+    let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
     let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();

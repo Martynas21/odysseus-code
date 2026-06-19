@@ -58,9 +58,7 @@ fn reasoning_lines(reasoning: &str, width: usize) -> Vec<Line<'static>> {
 
 fn question_lines(pq: &PendingQuestion, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let sel_style = Style::new()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
+    let sel_style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
     let dim_style = Style::new().fg(Color::DarkGray);
 
     for row in wrap_text(&pq.question, width) {

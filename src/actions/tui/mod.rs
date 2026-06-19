@@ -84,7 +84,10 @@ async fn run(
                 AgentEvent::AssistantTextDone => app.end_assistant(),
                 AgentEvent::ToolCallRequested { name, args } => {
                     app.reasoning.clear();
-                    app.push(Role::Tool, format!("{name}: {}", summarize_args(&name, &args)));
+                    app.push(
+                        Role::Tool,
+                        format!("{name}: {}", summarize_args(&name, &args)),
+                    );
                 }
                 AgentEvent::ApprovalRequired { name, args } => {
                     let pending = PendingApproval { name, args };
@@ -328,7 +331,10 @@ async fn run(
                     if let Some(first) = app.history.first_mut() {
                         *first = crate::actions::system_message_for(&ctx, app.mode, &cwd);
                     }
-                    app.push(Role::System, format!("Switched to {} mode.", app.mode.label()));
+                    app.push(
+                        Role::System,
+                        format!("Switched to {} mode.", app.mode.label()),
+                    );
                 }
             }
             KeyCode::Tab => app.show_details = !app.show_details,

@@ -43,6 +43,12 @@ impl PromptContext {
             s.push_str(&format!("Current file: {file}\n"));
         }
         s.push_str(&format!("Primary language: {}\n", self.language));
+        if matches!(mode, Mode::Implement) {
+            s.push_str(
+                "\nYou also have skills: reusable, step-by-step procedures. Call list_skills \
+                 to see what is available, then invoke_skill to load one and follow it.\n",
+            );
+        }
         s.push('\n');
         s.push_str(mode_instructions(mode));
         if !specs.is_empty() {
@@ -50,9 +56,7 @@ impl PromptContext {
             for path in specs {
                 s.push_str(&format!("- {path}\n"));
             }
-            s.push_str(
-                "Read the relevant one(s) with read_file before implementing.\n",
-            );
+            s.push_str("Read the relevant one(s) with read_file before implementing.\n");
         }
         s
     }
@@ -141,6 +145,15 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_mentions_skills() {
+        let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
+        let sys = ctx.system_prompt(Mode::Implement, &[]);
+        assert!(sys.contains("list_skills"));
+        // Spec mode has no skill tools, so it must not advertise them.
+        assert!(!ctx.system_prompt(Mode::Spec, &[]).contains("list_skills"));
+    }
+
+    #[test]
     fn system_prompt_includes_current_file_when_present() {
         let ctx = PromptContext::build(
             Some(Path::new("/proj")),
@@ -159,7 +172,10 @@ mod tests {
         assert!(sys.contains("ask_user"));
         assert!(sys.contains("one"));
         assert!(sys.contains("docs/edds/"));
-        assert!(sys.to_lowercase().contains("do not write or modify source code"));
+        assert!(
+            sys.to_lowercase()
+                .contains("do not write or modify source code")
+        );
     }
 
     #[test]
@@ -178,8 +194,7 @@ mod tests {
             !ctx.system_prompt(Mode::Implement, &[])
                 .contains("## Available specifications")
         );
-        let with_specs =
-            ctx.system_prompt(Mode::Implement, &["docs/edds/foo.md".to_string()]);
+        let with_specs = ctx.system_prompt(Mode::Implement, &["docs/edds/foo.md".to_string()]);
         assert!(with_specs.contains("## Available specifications"));
         assert!(with_specs.contains("docs/edds/foo.md"));
     }

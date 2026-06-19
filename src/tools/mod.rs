@@ -3,6 +3,7 @@ pub mod fs_read;
 pub mod fs_write;
 pub mod search;
 pub mod shell;
+pub mod skills;
 
 use std::path::{Path, PathBuf};
 
@@ -63,10 +64,11 @@ pub trait Tool: Send + Sync {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
+    tracker: crate::skills::SkillTracker,
 }
 
 impl ToolRegistry {
-    pub fn default_set() -> Self {
+    pub fn default_set(tracker: crate::skills::SkillTracker) -> Self {
         Self {
             tools: vec![
                 Box::new(fs_read::ReadFile),
@@ -75,9 +77,26 @@ impl ToolRegistry {
                 Box::new(fs_write::EditFile),
                 Box::new(search::Grep),
                 Box::new(shell::Shell),
+                Box::new(skills::ListSkills),
+                Box::new(skills::InvokeSkill {
+                    tracker: tracker.clone(),
+                }),
+                Box::new(skills::CompleteSkillStep {
+                    tracker: tracker.clone(),
+                }),
+                Box::new(skills::AbandonSkill {
+                    tracker: tracker.clone(),
+                }),
                 Box::new(ask_user::AskUser),
             ],
+            tracker,
         }
+    }
+
+    /// The shared skill-progress handle these tools mutate. The agent loop reads
+    /// it to pin live progress into context, guaranteeing a single source of truth.
+    pub fn tracker(&self) -> &crate::skills::SkillTracker {
+        &self.tracker
     }
 
     /// Build the toolset appropriate for the given mode. Spec mode gets the
@@ -85,7 +104,7 @@ impl ToolRegistry {
     /// `shell`), so the agent cannot modify source code.
     pub fn for_mode(mode: Mode) -> Self {
         match mode {
-            Mode::Implement => Self::default_set(),
+            Mode::Implement => Self::default_set(crate::skills::SkillTracker::default()),
             Mode::Spec => Self {
                 tools: vec![
                     Box::new(fs_read::ReadFile),
@@ -94,6 +113,7 @@ impl ToolRegistry {
                     Box::new(fs_write::WriteFile { spec_only: true }),
                     Box::new(ask_user::AskUser),
                 ],
+                tracker: crate::skills::SkillTracker::default(),
             },
         }
     }
@@ -199,8 +219,27 @@ mod tests {
     }
 
     #[test]
+    fn registry_includes_skill_tools() {
+        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default());
+        let defs = reg.defs();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        for expected in [
+            "list_skills",
+            "invoke_skill",
+            "complete_skill_step",
+            "abandon_skill",
+        ] {
+            assert!(names.contains(&expected), "missing tool {expected}");
+            assert_eq!(
+                reg.get(expected).map(|t| t.safety()),
+                Some(Safety::ReadOnly)
+            );
+        }
+    }
+
+    #[test]
     fn registry_exposes_defs_and_safety() {
-        let reg = ToolRegistry::default_set();
+        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default());
         let defs = reg.defs();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
@@ -235,11 +274,12 @@ mod tests {
             .into_iter()
             .map(|d| d.name)
             .collect();
-        let default: Vec<String> = ToolRegistry::default_set()
-            .defs()
-            .into_iter()
-            .map(|d| d.name)
-            .collect();
+        let default: Vec<String> =
+            ToolRegistry::default_set(crate::skills::SkillTracker::default())
+                .defs()
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
         assert_eq!(implement, default);
     }
 }

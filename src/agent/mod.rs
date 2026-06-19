@@ -137,9 +137,13 @@ pub async fn run_agent(
     let tools = registry.defs();
 
     for _ in 0..MAX_ITERATIONS {
+        let mut messages = history.clone();
+        if let Some(status) = registry.tracker().status_text() {
+            messages.push(ChatMessage::system(status));
+        }
         let req = ChatRequest {
             model: cfg.model.clone(),
-            messages: history.clone(),
+            messages,
             tools: tools.clone(),
             temperature: cfg.temperature,
             max_tokens: cfg.max_tokens,

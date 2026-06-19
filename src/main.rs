@@ -5,6 +5,7 @@ mod config;
 mod context;
 mod llm;
 mod mode;
+mod skills;
 mod tools;
 
 use anyhow::Result;
