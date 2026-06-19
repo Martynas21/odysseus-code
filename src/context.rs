@@ -43,10 +43,12 @@ impl PromptContext {
             s.push_str(&format!("Current file: {file}\n"));
         }
         s.push_str(&format!("Primary language: {}\n", self.language));
-        s.push_str(
-            "\nYou also have skills: reusable, step-by-step procedures. Call list_skills \
-             to see what is available, then invoke_skill to load one and follow it.\n",
-        );
+        if matches!(mode, Mode::Implement) {
+            s.push_str(
+                "\nYou also have skills: reusable, step-by-step procedures. Call list_skills \
+                 to see what is available, then invoke_skill to load one and follow it.\n",
+            );
+        }
         s.push('\n');
         s.push_str(mode_instructions(mode));
         if !specs.is_empty() {
@@ -147,8 +149,10 @@ mod tests {
     #[test]
     fn system_prompt_mentions_skills() {
         let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
-        let sys = ctx.system_prompt();
+        let sys = ctx.system_prompt(Mode::Implement, &[]);
         assert!(sys.contains("list_skills"));
+        // Spec mode has no skill tools, so it must not advertise them.
+        assert!(!ctx.system_prompt(Mode::Spec, &[]).contains("list_skills"));
     }
 
     #[test]

@@ -377,6 +377,7 @@ async fn active_skill_status_is_injected_into_request() {
     let registry = Arc::new(ToolRegistry::default_set(tracker));
     let (tx, _rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
 
     run_agent(
         provider,
@@ -384,10 +385,12 @@ async fn active_skill_status_is_injected_into_request() {
         vec![ChatMessage::user("hi")],
         tx,
         arx,
+        qrx,
         &cfg(),
         Path::new("."),
         ApprovalPolicy::Auto,
         true,
+        false,
     )
     .await;
 
@@ -408,6 +411,7 @@ async fn no_status_injected_without_active_skill() {
     let registry = Arc::new(ToolRegistry::default_set(SkillTracker::default()));
     let (tx, _rx) = mpsc::unbounded_channel();
     let (_atx, arx) = mpsc::unbounded_channel();
+    let (_qtx, qrx) = mpsc::unbounded_channel::<QuestionAnswer>();
 
     run_agent(
         provider,
@@ -415,10 +419,12 @@ async fn no_status_injected_without_active_skill() {
         vec![ChatMessage::user("hi")],
         tx,
         arx,
+        qrx,
         &cfg(),
         Path::new("."),
         ApprovalPolicy::Auto,
         true,
+        false,
     )
     .await;
 

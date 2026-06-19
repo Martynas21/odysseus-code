@@ -97,12 +97,14 @@ impl ToolRegistry {
     /// it to pin live progress into context, guaranteeing a single source of truth.
     pub fn tracker(&self) -> &crate::skills::SkillTracker {
         &self.tracker
+    }
+
     /// Build the toolset appropriate for the given mode. Spec mode gets the
     /// read-only tools plus a spec-restricted writer (no `edit_file`, no
     /// `shell`), so the agent cannot modify source code.
     pub fn for_mode(mode: Mode) -> Self {
         match mode {
-            Mode::Implement => Self::default_set(),
+            Mode::Implement => Self::default_set(crate::skills::SkillTracker::default()),
             Mode::Spec => Self {
                 tools: vec![
                     Box::new(fs_read::ReadFile),
@@ -111,6 +113,7 @@ impl ToolRegistry {
                     Box::new(fs_write::WriteFile { spec_only: true }),
                     Box::new(ask_user::AskUser),
                 ],
+                tracker: crate::skills::SkillTracker::default(),
             },
         }
     }
@@ -271,11 +274,12 @@ mod tests {
             .into_iter()
             .map(|d| d.name)
             .collect();
-        let default: Vec<String> = ToolRegistry::default_set()
-            .defs()
-            .into_iter()
-            .map(|d| d.name)
-            .collect();
+        let default: Vec<String> =
+            ToolRegistry::default_set(crate::skills::SkillTracker::default())
+                .defs()
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
         assert_eq!(implement, default);
     }
 }
