@@ -23,10 +23,7 @@ fn plain(lines: &[Line<'static>]) -> String {
         .join("\n")
 }
 
-fn span_with<'a>(
-    lines: &'a [Line<'static>],
-    needle: &str,
-) -> &'a ratatui::text::Span<'static> {
+fn span_with<'a>(lines: &'a [Line<'static>], needle: &str) -> &'a ratatui::text::Span<'static> {
     lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -133,7 +130,10 @@ fn horizontal_rule_fills_width() {
         .map(|l| l.to_string())
         .find(|s| s.contains('─'))
         .expect("a rule line");
-    assert!(rule.chars().filter(|&c| c == '─').count() >= 10, "got: {rule:?}");
+    assert!(
+        rule.chars().filter(|&c| c == '─').count() >= 10,
+        "got: {rule:?}"
+    );
 }
 
 #[test]

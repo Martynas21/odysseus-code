@@ -4,8 +4,8 @@ mod cli;
 mod config;
 mod context;
 mod llm;
-mod skills;
 mod mode;
+mod skills;
 mod tools;
 
 use anyhow::Result;

@@ -56,9 +56,7 @@ impl PromptContext {
             for path in specs {
                 s.push_str(&format!("- {path}\n"));
             }
-            s.push_str(
-                "Read the relevant one(s) with read_file before implementing.\n",
-            );
+            s.push_str("Read the relevant one(s) with read_file before implementing.\n");
         }
         s
     }
@@ -174,7 +172,10 @@ mod tests {
         assert!(sys.contains("ask_user"));
         assert!(sys.contains("one"));
         assert!(sys.contains("docs/edds/"));
-        assert!(sys.to_lowercase().contains("do not write or modify source code"));
+        assert!(
+            sys.to_lowercase()
+                .contains("do not write or modify source code")
+        );
     }
 
     #[test]
@@ -193,8 +194,7 @@ mod tests {
             !ctx.system_prompt(Mode::Implement, &[])
                 .contains("## Available specifications")
         );
-        let with_specs =
-            ctx.system_prompt(Mode::Implement, &["docs/edds/foo.md".to_string()]);
+        let with_specs = ctx.system_prompt(Mode::Implement, &["docs/edds/foo.md".to_string()]);
         assert!(with_specs.contains("## Available specifications"));
         assert!(with_specs.contains("docs/edds/foo.md"));
     }

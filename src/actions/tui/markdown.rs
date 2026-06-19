@@ -280,7 +280,8 @@ impl Renderer {
         let tokens = std::mem::take(&mut self.inline);
         let cont = self.cur_indent();
         let first = self.pending_first.take().unwrap_or_else(|| cont.clone());
-        self.out.extend(wrap_tokens(&tokens, self.width, &first, &cont));
+        self.out
+            .extend(wrap_tokens(&tokens, self.width, &first, &cont));
     }
 
     fn blank(&mut self) {
