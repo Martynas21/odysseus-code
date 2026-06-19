@@ -151,6 +151,14 @@ async fn run(
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if app.quit_armed {
+                break;
+            }
+            app.quit_armed = true;
+            continue;
+        }
+        app.quit_armed = false;
         if let Some(pq) = app.pending_question.as_mut() {
             // `answer` is set when the question is resolved; the actual send/clear
             // happens after the `pq` borrow ends to avoid borrow conflicts on `app`.
@@ -256,14 +264,6 @@ async fn run(
             }
             continue;
         }
-        if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
-            if app.quit_armed {
-                break;
-            }
-            app.quit_armed = true;
-            continue;
-        }
-        app.quit_armed = false;
         match key.code {
             KeyCode::Esc => {
                 if app.thinking {
