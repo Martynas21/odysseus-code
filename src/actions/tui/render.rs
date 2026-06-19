@@ -176,8 +176,12 @@ pub(super) fn message_lines(messages: &[DisplayMessage], width: usize) -> Vec<Li
             format!("{label}:"),
             Style::new().fg(color).add_modifier(Modifier::BOLD),
         )));
-        for row in wrap_text(&message.content, width) {
-            lines.push(Line::from(row));
+        if message.role == Role::Assistant {
+            lines.extend(super::markdown::render(&message.content, width));
+        } else {
+            for row in wrap_text(&message.content, width) {
+                lines.push(Line::from(row));
+            }
         }
         lines.push(Line::default());
     }

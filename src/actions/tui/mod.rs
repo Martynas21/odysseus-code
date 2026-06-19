@@ -14,6 +14,7 @@ use crate::tools::ToolRegistry;
 
 mod app;
 mod banner;
+mod markdown;
 mod render;
 
 use app::{App, PendingApproval, Role};
