@@ -1,3 +1,4 @@
+pub mod ask_user;
 pub mod fs_read;
 pub mod fs_write;
 pub mod search;
@@ -11,6 +12,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::llm::ToolDef;
+use crate::mode::Mode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Safety {
@@ -36,6 +38,13 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &'static str;
     fn parameters(&self) -> Value;
     fn safety(&self) -> Safety;
+
+    /// Whether the agent loop must handle this tool by blocking for user input
+    /// (e.g. an interactive question) instead of calling `execute`.
+    fn interactive(&self) -> bool {
+        false
+    }
+
     async fn execute(
         &self,
         args: &Value,
@@ -64,7 +73,7 @@ impl ToolRegistry {
             tools: vec![
                 Box::new(fs_read::ReadFile),
                 Box::new(fs_read::ListDir),
-                Box::new(fs_write::WriteFile),
+                Box::new(fs_write::WriteFile { spec_only: false }),
                 Box::new(fs_write::EditFile),
                 Box::new(search::Grep),
                 Box::new(shell::Shell),
@@ -78,6 +87,7 @@ impl ToolRegistry {
                 Box::new(skills::AbandonSkill {
                     tracker: tracker.clone(),
                 }),
+                Box::new(ask_user::AskUser),
             ],
             tracker,
         }
@@ -87,6 +97,22 @@ impl ToolRegistry {
     /// it to pin live progress into context, guaranteeing a single source of truth.
     pub fn tracker(&self) -> &crate::skills::SkillTracker {
         &self.tracker
+    /// Build the toolset appropriate for the given mode. Spec mode gets the
+    /// read-only tools plus a spec-restricted writer (no `edit_file`, no
+    /// `shell`), so the agent cannot modify source code.
+    pub fn for_mode(mode: Mode) -> Self {
+        match mode {
+            Mode::Implement => Self::default_set(),
+            Mode::Spec => Self {
+                tools: vec![
+                    Box::new(fs_read::ReadFile),
+                    Box::new(fs_read::ListDir),
+                    Box::new(search::Grep),
+                    Box::new(fs_write::WriteFile { spec_only: true }),
+                    Box::new(ask_user::AskUser),
+                ],
+            },
+        }
     }
 
     pub fn defs(&self) -> Vec<ToolDef> {
@@ -159,6 +185,16 @@ pub(crate) fn truncate(s: String, max: usize) -> String {
     }
 }
 
+/// Truncate to at most `max` characters, appending `suffix` when shortened.
+/// Char-based (not byte-based), so it never splits a multi-byte character.
+pub(crate) fn truncate_chars(s: &str, max: usize, suffix: &str) -> String {
+    if s.chars().count() > max {
+        format!("{}{suffix}", s.chars().take(max).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +247,35 @@ mod tests {
         );
         assert_eq!(reg.get("shell").map(|t| t.safety()), Some(Safety::Mutating));
         assert!(reg.get("nope").is_none());
+    }
+
+    #[test]
+    fn spec_mode_excludes_code_mutating_tools() {
+        let names: Vec<String> = ToolRegistry::for_mode(Mode::Spec)
+            .defs()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(names.iter().any(|n| n == "read_file"));
+        assert!(names.iter().any(|n| n == "grep"));
+        assert!(names.iter().any(|n| n == "write_file"));
+        assert!(!names.iter().any(|n| n == "edit_file"));
+        assert!(!names.iter().any(|n| n == "shell"));
+        assert!(names.iter().any(|n| n == "ask_user"));
+    }
+
+    #[test]
+    fn implement_mode_matches_default_set() {
+        let implement: Vec<String> = ToolRegistry::for_mode(Mode::Implement)
+            .defs()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        let default: Vec<String> = ToolRegistry::default_set()
+            .defs()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(implement, default);
     }
 }

@@ -3,9 +3,16 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::mode::SPEC_DIR;
+
 use super::{Safety, Tool, ToolError, resolve_in_repo, str_arg};
 
-pub struct WriteFile;
+/// Writes a file in the workspace. When `spec_only` is set (spec mode) writes
+/// are restricted to `*.md` files under `docs/edds/`, so the agent cannot edit
+/// source code while building a specification.
+pub struct WriteFile {
+    pub spec_only: bool,
+}
 
 #[async_trait]
 impl Tool for WriteFile {
@@ -13,7 +20,12 @@ impl Tool for WriteFile {
         "write_file"
     }
     fn description(&self) -> &'static str {
-        "Create or overwrite a file in the workspace with the given content."
+        if self.spec_only {
+            "Create or overwrite a specification document (a *.md file under docs/edds/). \
+             In spec mode these are the only files you may write."
+        } else {
+            "Create or overwrite a file in the workspace with the given content."
+        }
     }
     fn parameters(&self) -> Value {
         json!({
@@ -29,7 +41,18 @@ impl Tool for WriteFile {
         Safety::Mutating
     }
     async fn execute(&self, args: &Value, cwd: &Path, _t: u64) -> Result<String, ToolError> {
-        let path = resolve_in_repo(cwd, str_arg(args, "path")?)?;
+        let raw = str_arg(args, "path")?;
+        let path = resolve_in_repo(cwd, raw)?;
+        if self.spec_only {
+            let spec_dir = resolve_in_repo(cwd, SPEC_DIR)?;
+            let is_md = path.extension().and_then(|e| e.to_str()) == Some("md");
+            if !path.starts_with(&spec_dir) || !is_md {
+                return Err(ToolError::Failed(format!(
+                    "spec mode can only write *.md files under {SPEC_DIR}/; \
+                     switch to implement mode (Shift+Tab) to change code",
+                )));
+            }
+        }
         let content = str_arg(args, "content")?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -39,11 +62,7 @@ impl Tool for WriteFile {
         tokio::fs::write(&path, content)
             .await
             .map_err(|e| ToolError::Io(e.to_string()))?;
-        Ok(format!(
-            "wrote {} bytes to {}",
-            content.len(),
-            path.display()
-        ))
+        Ok(format!("wrote {} bytes to {raw}", content.len()))
     }
 }
 
@@ -73,7 +92,8 @@ impl Tool for EditFile {
         Safety::Mutating
     }
     async fn execute(&self, args: &Value, cwd: &Path, _t: u64) -> Result<String, ToolError> {
-        let path = resolve_in_repo(cwd, str_arg(args, "path")?)?;
+        let raw = str_arg(args, "path")?;
+        let path = resolve_in_repo(cwd, raw)?;
         let old = str_arg(args, "old")?;
         let new = str_arg(args, "new")?;
         let replace_all = args
@@ -104,10 +124,7 @@ impl Tool for EditFile {
         tokio::fs::write(&path, updated)
             .await
             .map_err(|e| ToolError::Io(e.to_string()))?;
-        Ok(format!(
-            "edited {} ({count} replacement(s))",
-            path.display()
-        ))
+        Ok(format!("edited {raw} ({count} replacement(s))"))
     }
 }
 
@@ -120,7 +137,7 @@ mod tests {
     #[tokio::test]
     async fn write_file_creates_parents_and_writes() {
         let dir = tempfile::tempdir().unwrap();
-        WriteFile
+        WriteFile { spec_only: false }
             .execute(
                 &json!({"path": "nested/a.txt", "content": "hello"}),
                 dir.path(),
@@ -130,6 +147,64 @@ mod tests {
             .unwrap();
         let got = fs::read_to_string(dir.path().join("nested/a.txt")).unwrap();
         assert_eq!(got, "hello");
+    }
+
+    #[tokio::test]
+    async fn spec_write_allows_spec_path() {
+        let dir = tempfile::tempdir().unwrap();
+        WriteFile { spec_only: true }
+            .execute(
+                &json!({"path": "docs/edds/specification.md", "content": "spec"}),
+                dir.path(),
+                5,
+            )
+            .await
+            .unwrap();
+        let got = fs::read_to_string(dir.path().join("docs/edds/specification.md")).unwrap();
+        assert_eq!(got, "spec");
+    }
+
+    #[tokio::test]
+    async fn spec_write_allows_named_spec_file() {
+        let dir = tempfile::tempdir().unwrap();
+        WriteFile { spec_only: true }
+            .execute(
+                &json!({"path": "docs/edds/test-coverage.md", "content": "spec"}),
+                dir.path(),
+                5,
+            )
+            .await
+            .unwrap();
+        let got = fs::read_to_string(dir.path().join("docs/edds/test-coverage.md")).unwrap();
+        assert_eq!(got, "spec");
+    }
+
+    #[tokio::test]
+    async fn spec_write_rejects_non_md_under_spec_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = WriteFile { spec_only: true }
+            .execute(
+                &json!({"path": "docs/edds/notes.txt", "content": "nope"}),
+                dir.path(),
+                5,
+            )
+            .await;
+        assert!(err.is_err());
+        assert!(!dir.path().join("docs/edds/notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn spec_write_rejects_other_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = WriteFile { spec_only: true }
+            .execute(
+                &json!({"path": "src/main.rs", "content": "hacked"}),
+                dir.path(),
+                5,
+            )
+            .await;
+        assert!(err.is_err());
+        assert!(!dir.path().join("src/main.rs").exists());
     }
 
     #[tokio::test]

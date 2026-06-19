@@ -45,6 +45,10 @@ pub enum Command {
         /// Skip the model's chain-of-thought for a faster, direct answer
         #[arg(long)]
         no_think: bool,
+        /// Agent mode: "implement" (default) builds the feature; "spec" produces
+        /// a specification document and makes no code changes
+        #[arg(long, default_value = "implement")]
+        mode: String,
     },
 }
 
