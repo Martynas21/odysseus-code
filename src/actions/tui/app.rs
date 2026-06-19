@@ -4,9 +4,10 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::text::Line;
 use tokio::sync::mpsc;
 
-use crate::agent::ApprovalDecision;
+use crate::agent::{ApprovalDecision, QuestionAnswer, QuestionOption};
 use crate::config::Config;
 use crate::llm::message::ChatMessage;
+use crate::mode::Mode;
 
 use super::render::message_lines;
 
@@ -31,6 +32,62 @@ pub(super) struct PendingApproval {
     pub(super) args: String,
 }
 
+pub(super) struct PendingQuestion {
+    pub(super) question: String,
+    pub(super) options: Vec<QuestionOption>,
+    pub(super) selected: usize, // 0..=options.len(); the last index is the "Other…" row
+    pub(super) entry: Option<EntryState>,
+}
+
+impl PendingQuestion {
+    /// Index of the synthetic "Other…" (free-text) row, which sits after the
+    /// model-supplied options.
+    pub(super) fn other_index(&self) -> usize {
+        self.options.len()
+    }
+
+    /// Whether the highlighted row is the "Other…" row rather than an option.
+    pub(super) fn other_selected(&self) -> bool {
+        self.selected == self.other_index()
+    }
+
+    /// The in-progress note text being typed for option `i`, if any.
+    pub(super) fn note_buffer(&self, i: usize) -> Option<&str> {
+        match &self.entry {
+            Some(EntryState {
+                kind: EntryKind::Note(j),
+                buffer,
+            }) if *j == i => Some(buffer),
+            _ => None,
+        }
+    }
+
+    /// The in-progress free-text ("Other…") answer being typed, if any.
+    pub(super) fn free_text_buffer(&self) -> Option<&str> {
+        match &self.entry {
+            Some(EntryState {
+                kind: EntryKind::FreeText,
+                buffer,
+            }) => Some(buffer),
+            _ => None,
+        }
+    }
+}
+
+pub(super) struct EntryState {
+    pub(super) kind: EntryKind,
+    pub(super) buffer: String,
+}
+
+pub(super) enum EntryKind {
+    FreeText,
+    Note(usize),
+}
+
+pub(super) fn note_answer(label: &str, note: &str) -> String {
+    format!("{label} — note: {note}")
+}
+
 pub(super) struct App {
     pub(super) endpoint: String,
     pub(super) model: String,
@@ -43,8 +100,11 @@ pub(super) struct App {
     pub(super) streaming_idx: Option<usize>,
     pub(super) appr_tx: Option<mpsc::UnboundedSender<ApprovalDecision>>,
     pub(super) pending_approval: Option<PendingApproval>,
+    pub(super) pending_question: Option<PendingQuestion>,
+    pub(super) q_tx: Option<mpsc::UnboundedSender<QuestionAnswer>>,
     pub(super) reasoning: String,
     pub(super) think: bool,
+    pub(super) mode: Mode,
     pub(super) quit_armed: bool,
     pub(super) started: Instant,
     pub(super) anim_phase: f64,
@@ -67,8 +127,11 @@ impl App {
             streaming_idx: None,
             appr_tx: None,
             pending_approval: None,
+            pending_question: None,
+            q_tx: None,
             reasoning: String::new(),
             think: false,
+            mode: Mode::default(),
             quit_armed: false,
             started: Instant::now(),
             anim_phase: 0.0,
@@ -128,6 +191,8 @@ impl App {
         self.reasoning.clear();
         self.appr_tx = None;
         self.pending_approval = None;
+        self.pending_question = None;
+        self.q_tx = None;
         self.push(Role::System, "Stopped.".into());
     }
 

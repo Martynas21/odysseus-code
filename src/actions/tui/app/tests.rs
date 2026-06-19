@@ -63,3 +63,11 @@ fn approval_keys_map_to_decisions() {
     assert_eq!(app.approval_key(KeyCode::Esc), None);
     assert_eq!(app.approval_key(KeyCode::Char('z')), None);
 }
+
+#[test]
+fn note_answer_formats_label_and_note() {
+    assert_eq!(
+        note_answer("Use Postgres", "but keep SQLite for tests"),
+        "Use Postgres — note: but keep SQLite for tests"
+    );
+}

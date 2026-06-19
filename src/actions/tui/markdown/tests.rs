@@ -1,6 +1,20 @@
 use super::*;
 use ratatui::style::{Color, Modifier};
 
+#[test]
+fn first_heading_handles_levels_and_missing() {
+    assert_eq!(first_heading("# Title\nbody").as_deref(), Some("Title"));
+    assert_eq!(
+        first_heading("## Overview\nbody").as_deref(),
+        Some("Overview")
+    );
+    assert_eq!(
+        first_heading("Setext\n======\nbody").as_deref(),
+        Some("Setext")
+    );
+    assert_eq!(first_heading("no heading here").as_deref(), None);
+}
+
 fn plain(lines: &[Line<'static>]) -> String {
     lines
         .iter()
