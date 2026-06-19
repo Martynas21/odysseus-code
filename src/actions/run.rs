@@ -4,14 +4,20 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use tokio::sync::mpsc;
 
+use std::sync::Arc;
+
 use crate::agent::{self, AgentEvent, ApprovalPolicy};
 use crate::config::Config;
 use crate::llm::message::ChatMessage;
+use crate::mode::Mode;
+use crate::tools::ToolRegistry;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     prompt: String,
     yes: bool,
     no_think: bool,
+    mode: Mode,
     project_path: Option<&Path>,
     current_file: Option<&Path>,
     model_override: Option<&str>,
@@ -22,7 +28,7 @@ pub async fn handle(
     let session = crate::actions::build_session(&cfg, project_path, current_file);
 
     let history = vec![
-        ChatMessage::system(session.ctx.system_prompt()),
+        crate::actions::system_message_for(&session.ctx, mode, &session.cwd),
         ChatMessage::user(prompt),
     ];
 
@@ -34,14 +40,15 @@ pub async fn handle(
 
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (_appr_tx, appr_rx) = mpsc::unbounded_channel();
+    let (_q_tx, q_rx) = mpsc::unbounded_channel();
 
     let think = !no_think;
     let provider = session.provider;
-    let registry = session.registry;
+    let registry = Arc::new(ToolRegistry::for_mode(mode));
     let cwd = session.cwd;
     let agent_task = tokio::spawn(async move {
         agent::run_agent(
-            provider, registry, history, ev_tx, appr_rx, &cfg, &cwd, policy, think,
+            provider, registry, history, ev_tx, appr_rx, q_rx, &cfg, &cwd, policy, think, false,
         )
         .await
     });
@@ -77,6 +84,7 @@ pub async fn handle(
                 error = Some(msg);
                 break;
             }
+            AgentEvent::QuestionRaised { .. } => {}
             AgentEvent::Done | AgentEvent::TurnComplete(_) => break,
         }
     }

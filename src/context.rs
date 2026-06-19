@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::mode::Mode;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptContext {
     pub project_path: String,
@@ -28,7 +30,7 @@ impl PromptContext {
         }
     }
 
-    pub fn system_prompt(&self) -> String {
+    pub fn system_prompt(&self, mode: Mode, specs: &[String]) -> String {
         let mut s = String::new();
         s.push_str(
             "You are a coding agent operating directly on the user's local repository. \
@@ -41,7 +43,42 @@ impl PromptContext {
             s.push_str(&format!("Current file: {file}\n"));
         }
         s.push_str(&format!("Primary language: {}\n", self.language));
+        s.push('\n');
+        s.push_str(mode_instructions(mode));
+        if !specs.is_empty() {
+            s.push_str("\n\n## Available specifications\n\n");
+            for path in specs {
+                s.push_str(&format!("- {path}\n"));
+            }
+            s.push_str(
+                "Read the relevant one(s) with read_file before implementing.\n",
+            );
+        }
         s
+    }
+}
+
+fn mode_instructions(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Spec => concat!(
+            "You are in SPEC mode. Your only goal is to produce a clear specification ",
+            "document for the feature the user wants — its core behaviour, requirements, ",
+            "and relevant edge cases. Do NOT write or modify source code and do NOT run ",
+            "mutating shell commands. Use the ask_user tool to ask the user EXACTLY ONE ",
+            "clarifying question at a time, offering 2-3 concise options, and WAIT for the ",
+            "answer before asking the next question. NEVER assume or fabricate answers the ",
+            "user has not given. Save the specification to ",
+            "docs/edds/<kebab-case-feature-title>.md with the write_file tool (the ONLY ",
+            "files you may write are *.md files under docs/edds/). When the specification is ",
+            "complete and there is nothing left to clarify, tell the user to press Shift+Tab ",
+            "to switch to implement mode — do not start coding yourself.",
+        ),
+        Mode::Implement => concat!(
+            "You are in IMPLEMENT mode. Build the feature the user asks for, editing code ",
+            "as needed. If specifications are listed below, read the relevant one(s) with ",
+            "read_file before implementing. Use the ask_user tool to clarify ambiguities, ",
+            "asking one question at a time.",
+        ),
     }
 }
 
@@ -97,7 +134,7 @@ mod tests {
     #[test]
     fn system_prompt_describes_workspace_and_tools() {
         let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
-        let sys = ctx.system_prompt();
+        let sys = ctx.system_prompt(Mode::Implement, &[]);
         assert!(sys.contains("/proj"));
         assert!(sys.contains("rust"));
         assert!(sys.to_lowercase().contains("tool"));
@@ -110,7 +147,40 @@ mod tests {
             Some(Path::new("/proj/src/main.rs")),
             "rust",
         );
-        let sys = ctx.system_prompt();
+        let sys = ctx.system_prompt(Mode::Implement, &[]);
         assert!(sys.contains("/proj/src/main.rs"));
+    }
+
+    #[test]
+    fn spec_prompt_forbids_code_edits_and_names_spec_path() {
+        let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
+        let sys = ctx.system_prompt(Mode::Spec, &[]);
+        assert!(sys.contains("SPEC mode"));
+        assert!(sys.contains("ask_user"));
+        assert!(sys.contains("one"));
+        assert!(sys.contains("docs/edds/"));
+        assert!(sys.to_lowercase().contains("do not write or modify source code"));
+    }
+
+    #[test]
+    fn implement_prompt_mentions_building_and_reading_specs() {
+        let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
+        let sys = ctx.system_prompt(Mode::Implement, &[]);
+        assert!(sys.contains("IMPLEMENT mode"));
+        assert!(sys.to_lowercase().contains("build the feature"));
+        assert!(sys.contains("read_file"));
+    }
+
+    #[test]
+    fn spec_section_only_appears_when_specs_present() {
+        let ctx = PromptContext::build(Some(Path::new("/proj")), None, "rust");
+        assert!(
+            !ctx.system_prompt(Mode::Implement, &[])
+                .contains("## Available specifications")
+        );
+        let with_specs =
+            ctx.system_prompt(Mode::Implement, &["docs/edds/foo.md".to_string()]);
+        assert!(with_specs.contains("## Available specifications"));
+        assert!(with_specs.contains("docs/edds/foo.md"));
     }
 }
