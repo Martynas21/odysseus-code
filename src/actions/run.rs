@@ -44,7 +44,8 @@ pub async fn handle(
 
     let think = !no_think;
     let provider = session.provider;
-    let registry = Arc::new(ToolRegistry::for_mode(mode));
+    let searxng = (!cfg.searxng_url.is_empty()).then(|| cfg.searxng_url.clone());
+    let registry = Arc::new(ToolRegistry::for_mode(mode, searxng));
     let cwd = session.cwd;
     let agent_task = tokio::spawn(async move {
         agent::run_agent(

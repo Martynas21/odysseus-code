@@ -11,7 +11,6 @@ const MAX_OUTPUT: usize = 40_000;
 /// Web search backed by a local SearXNG instance (JSON API). The endpoint is
 /// injected when the tool registry is built; `None` means SearXNG has not been
 /// configured yet.
-#[allow(dead_code)] // constructed when the tool is registered in the registry (next task)
 pub struct WebSearch {
     pub endpoint: Option<String>,
 }
