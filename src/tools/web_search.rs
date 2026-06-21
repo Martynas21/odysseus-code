@@ -5,15 +5,13 @@ use serde_json::{Value, json};
 
 use super::{Safety, Tool, ToolError, str_arg, truncate};
 
-#[allow(dead_code)]
 const DEFAULT_COUNT: u64 = 5;
-#[allow(dead_code)]
 const MAX_OUTPUT: usize = 40_000;
 
 /// Web search backed by a local SearXNG instance (JSON API). The endpoint is
 /// injected when the tool registry is built; `None` means SearXNG has not been
 /// configured yet.
-#[allow(dead_code)]
+#[allow(dead_code)] // constructed when the tool is registered in the registry (next task)
 pub struct WebSearch {
     pub endpoint: Option<String>,
 }
@@ -55,14 +53,9 @@ impl Tool for WebSearch {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_COUNT) as usize;
 
-        // Build URL with query parameters, percent-encoding the query
-        let url = format!(
-            "{base}/search?q={}&format=json&categories=general",
-            percent_encode_query(query)
-        );
-
         let resp = reqwest::Client::new()
-            .get(url)
+            .get(format!("{base}/search"))
+            .query(&[("q", query), ("format", "json"), ("categories", "general")])
             .send()
             .await
             .map_err(|e| ToolError::Failed(format!("searxng request failed: {e}")))?;
@@ -96,17 +89,6 @@ impl Tool for WebSearch {
             .collect();
         Ok(truncate(formatted.join("\n\n"), MAX_OUTPUT))
     }
-}
-
-/// Simple percent-encoding for URL query parameters.
-#[allow(dead_code)]
-fn percent_encode_query(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            _ => format!("%{:02X}", c as u8),
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -167,6 +149,7 @@ mod tests {
             .mock("GET", "/search")
             .match_query(mockito::Matcher::UrlEncoded("format".into(), "json".into()))
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(body.to_string())
             .create_async()
             .await;
@@ -187,6 +170,7 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         let _m = server
             .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
             .with_status(502)
             .create_async()
             .await;
@@ -195,7 +179,8 @@ mod tests {
         };
         let err = tool
             .execute(&json!({"query": "x"}), Path::new("."), 5)
-            .await;
-        assert!(err.is_err());
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("502"));
     }
 }
