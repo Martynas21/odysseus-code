@@ -100,6 +100,7 @@ fn every_key_round_trips_through_set_and_get() {
         ("tool_timeout_secs", "30"),
         ("approval_policy", "auto"),
         ("default_language", "go"),
+        ("searxng_url", "http://localhost:8080"),
     ];
     for key in Config::keys() {
         assert!(
@@ -112,4 +113,23 @@ fn every_key_round_trips_through_set_and_get() {
         cfg.set(key, value).unwrap();
         cfg.get(key).unwrap();
     }
+}
+
+#[test]
+fn searxng_url_round_trips_and_trims_slash() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.yaml");
+    let mut cfg = Config::load_file(&path).unwrap();
+    assert_eq!(cfg.searxng_url, "", "default searxng_url is empty");
+    cfg.set("searxng_url", "http://localhost:8080/").unwrap();
+    cfg.save_to(&path).unwrap();
+    let reloaded = Config::load_file(&path).unwrap();
+    assert_eq!(reloaded.searxng_url, "http://localhost:8080");
+}
+
+#[test]
+fn searxng_url_get_returns_value() {
+    let mut cfg = Config::default();
+    cfg.set("searxng_url", "http://h:8080").unwrap();
+    assert_eq!(cfg.get("searxng_url").unwrap(), "http://h:8080");
 }

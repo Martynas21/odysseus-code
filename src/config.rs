@@ -15,6 +15,7 @@ pub struct Config {
     pub tool_timeout_secs: u64,
     pub approval_policy: String,
     pub default_language: String,
+    pub searxng_url: String,
 }
 
 impl Default for Config {
@@ -28,6 +29,7 @@ impl Default for Config {
             tool_timeout_secs: 60,
             approval_policy: "prompt".into(),
             default_language: "rust".into(),
+            searxng_url: String::new(),
         }
     }
 }
@@ -60,6 +62,11 @@ impl Config {
             {
                 cfg.api_key = v.trim().to_string();
             }
+        }
+        if let Ok(v) = std::env::var("ODYSSEUS_SEARXNG_URL")
+            && !v.trim().is_empty()
+        {
+            cfg.searxng_url = v.trim().trim_end_matches('/').to_string();
         }
         Ok(cfg)
     }
@@ -117,6 +124,7 @@ impl Config {
                 other => bail!("approval_policy must be prompt|auto|readonly, got '{other}'"),
             },
             "default_language" => self.default_language = value.to_lowercase(),
+            "searxng_url" => self.searxng_url = value.trim_end_matches('/').to_string(),
             other => bail!(
                 "unknown config key '{other}' (valid keys: {})",
                 Self::keys().join(", ")
