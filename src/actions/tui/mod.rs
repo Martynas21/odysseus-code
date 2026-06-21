@@ -299,7 +299,8 @@ async fn run(
                 app.q_tx = Some(q_tx);
 
                 let provider = provider.clone();
-                let registry = Arc::new(ToolRegistry::for_mode(app.mode));
+                let searxng = (!cfg.searxng_url.is_empty()).then(|| cfg.searxng_url.clone());
+                let registry = Arc::new(ToolRegistry::for_mode(app.mode, searxng));
                 let history = app.history.clone();
                 let ev_tx = ev_tx.clone();
                 let policy = ApprovalPolicy::from_str(&cfg.approval_policy);

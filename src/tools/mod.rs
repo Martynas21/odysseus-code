@@ -4,6 +4,7 @@ pub mod fs_write;
 pub mod search;
 pub mod shell;
 pub mod skills;
+pub mod web_search;
 
 use std::path::{Path, PathBuf};
 
@@ -68,7 +69,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn default_set(tracker: crate::skills::SkillTracker) -> Self {
+    pub fn default_set(tracker: crate::skills::SkillTracker, searxng_url: Option<String>) -> Self {
         Self {
             tools: vec![
                 Box::new(fs_read::ReadFile),
@@ -88,6 +89,9 @@ impl ToolRegistry {
                     tracker: tracker.clone(),
                 }),
                 Box::new(ask_user::AskUser),
+                Box::new(web_search::WebSearch {
+                    endpoint: searxng_url,
+                }),
             ],
             tracker,
         }
@@ -102,9 +106,11 @@ impl ToolRegistry {
     /// Build the toolset appropriate for the given mode. Spec mode gets the
     /// read-only tools plus a spec-restricted writer (no `edit_file`, no
     /// `shell`), so the agent cannot modify source code.
-    pub fn for_mode(mode: Mode) -> Self {
+    pub fn for_mode(mode: Mode, searxng_url: Option<String>) -> Self {
         match mode {
-            Mode::Implement => Self::default_set(crate::skills::SkillTracker::default()),
+            Mode::Implement => {
+                Self::default_set(crate::skills::SkillTracker::default(), searxng_url)
+            }
             Mode::Spec => Self {
                 tools: vec![
                     Box::new(fs_read::ReadFile),
@@ -112,6 +118,9 @@ impl ToolRegistry {
                     Box::new(search::Grep),
                     Box::new(fs_write::WriteFile { spec_only: true }),
                     Box::new(ask_user::AskUser),
+                    Box::new(web_search::WebSearch {
+                        endpoint: searxng_url,
+                    }),
                 ],
                 tracker: crate::skills::SkillTracker::default(),
             },
@@ -220,7 +229,7 @@ mod tests {
 
     #[test]
     fn registry_includes_skill_tools() {
-        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default());
+        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default(), None);
         let defs = reg.defs();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         for expected in [
@@ -239,7 +248,7 @@ mod tests {
 
     #[test]
     fn registry_exposes_defs_and_safety() {
-        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default());
+        let reg = ToolRegistry::default_set(crate::skills::SkillTracker::default(), None);
         let defs = reg.defs();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
@@ -254,7 +263,7 @@ mod tests {
 
     #[test]
     fn spec_mode_excludes_code_mutating_tools() {
-        let names: Vec<String> = ToolRegistry::for_mode(Mode::Spec)
+        let names: Vec<String> = ToolRegistry::for_mode(Mode::Spec, None)
             .defs()
             .into_iter()
             .map(|d| d.name)
@@ -265,21 +274,39 @@ mod tests {
         assert!(!names.iter().any(|n| n == "edit_file"));
         assert!(!names.iter().any(|n| n == "shell"));
         assert!(names.iter().any(|n| n == "ask_user"));
+        assert!(names.iter().any(|n| n == "web_search"));
     }
 
     #[test]
     fn implement_mode_matches_default_set() {
-        let implement: Vec<String> = ToolRegistry::for_mode(Mode::Implement)
+        let implement: Vec<String> = ToolRegistry::for_mode(Mode::Implement, None)
             .defs()
             .into_iter()
             .map(|d| d.name)
             .collect();
         let default: Vec<String> =
-            ToolRegistry::default_set(crate::skills::SkillTracker::default())
+            ToolRegistry::default_set(crate::skills::SkillTracker::default(), None)
                 .defs()
                 .into_iter()
                 .map(|d| d.name)
                 .collect();
         assert_eq!(implement, default);
+    }
+
+    #[test]
+    fn registry_includes_web_search_with_endpoint() {
+        let reg = ToolRegistry::for_mode(Mode::Implement, Some("http://localhost:8080".into()));
+        assert!(reg.get("web_search").is_some());
+        assert_eq!(
+            reg.get("web_search").map(|t| t.safety()),
+            Some(Safety::ReadOnly)
+        );
+        // Spec mode also gets web_search (read-only).
+        let spec = ToolRegistry::for_mode(Mode::Spec, None);
+        assert!(spec.get("web_search").is_some());
+        assert_eq!(
+            spec.get("web_search").map(|t| t.safety()),
+            Some(Safety::ReadOnly)
+        );
     }
 }

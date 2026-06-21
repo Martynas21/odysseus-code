@@ -32,7 +32,10 @@ struct Frontmatter {
 }
 
 /// Markdown sources for the skills bundled into the binary.
-const BUNDLED_SOURCES: &[&str] = &[include_str!("bundled/summarize-changes.md")];
+const BUNDLED_SOURCES: &[&str] = &[
+    include_str!("bundled/summarize-changes.md"),
+    include_str!("bundled/setup-searxng.md"),
+];
 
 /// Parse a skill from its markdown-with-frontmatter source.
 ///
@@ -122,5 +125,23 @@ mod tests {
                 skill.name
             );
         }
+    }
+
+    #[test]
+    fn bundled_includes_setup_searxng() {
+        let names: Vec<&str> = bundled().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"setup-searxng"));
+    }
+
+    #[test]
+    fn bundled_setup_searxng_has_steps() {
+        let skill = bundled()
+            .iter()
+            .find(|s| s.name == "setup-searxng")
+            .unwrap();
+        assert!(
+            !skill.steps.is_empty(),
+            "setup-searxng should declare steps"
+        );
     }
 }

@@ -14,7 +14,7 @@ futures-util = "0.3.31"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.1"
 regex = "1.11.1"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_yaml = "0.9.34"
