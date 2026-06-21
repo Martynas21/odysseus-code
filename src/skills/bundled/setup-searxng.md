@@ -19,8 +19,8 @@ continuing.
    tell the user to install Docker / start the Docker daemon, then re-run this
    skill.
 
-2. **Write the settings file.** Create the directory `~/.config/searxng` and
-   write `~/.config/searxng/settings.yml` with the content below. Generate a
+2. **Write the settings file.** Create the directory `$HOME/.config/searxng` and
+   write `$HOME/.config/searxng/settings.yml` with the content below. Generate a
    random secret and substitute it for `REPLACE_WITH_RANDOM_SECRET` (e.g.
    `openssl rand -hex 32`). `formats` must include `json` or the API returns an
    error, and `limiter: false` keeps automated localhost queries from being
@@ -39,10 +39,12 @@ continuing.
 
 3. **Start the container.** First check that port 8080 is free (e.g.
    `ss -ltn | grep :8080`); if it is taken, pick another port and use it
-   consistently below. Then run:
+   consistently below. Then remove any pre-existing container with the same name
+   so re-runs succeed, and start a fresh one:
 
+       docker rm -f searxng 2>/dev/null || true
        docker run -d --name searxng -p 8080:8080 \
-         -v ~/.config/searxng:/etc/searxng searxng/searxng
+         -v $HOME/.config/searxng:/etc/searxng searxng/searxng
 
    Wait a few seconds, then poll `curl -s -o /dev/null -w '%{http_code}'
    http://localhost:8080/` until it returns `200`. If the container exits, read
