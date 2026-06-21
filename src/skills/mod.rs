@@ -139,6 +139,9 @@ mod tests {
             .iter()
             .find(|s| s.name == "setup-searxng")
             .unwrap();
-        assert!(!skill.steps.is_empty(), "setup-searxng should declare steps");
+        assert!(
+            !skill.steps.is_empty(),
+            "setup-searxng should declare steps"
+        );
     }
 }

@@ -80,7 +80,10 @@ impl Tool for WebSearch {
             .iter()
             .take(count)
             .map(|r| {
-                let title = r.get("title").and_then(Value::as_str).unwrap_or("(no title)");
+                let title = r
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no title)");
                 let link = r.get("url").and_then(Value::as_str).unwrap_or("");
                 let content = r.get("content").and_then(Value::as_str).unwrap_or("");
                 format!("{title}\n{link}\n{content}")
