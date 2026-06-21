@@ -19,16 +19,23 @@ continuing.
    tell the user to install Docker / start the Docker daemon, then re-run this
    skill.
 
-2. **Write the settings file.** Create the directory `$HOME/.config/searxng` and
-   write `$HOME/.config/searxng/settings.yml` with the content below. Generate a
-   random secret and substitute it for `REPLACE_WITH_RANDOM_SECRET` (e.g.
-   `openssl rand -hex 32`). `formats` must include `json` or the API returns an
-   error, and `limiter: false` keeps automated localhost queries from being
-   blocked:
+2. **Write the settings file.** Run the two commands below on the **host shell**
+   (the same shell as the other steps — do NOT write this file from inside a
+   Docker container, or it will be owned by the container's user and you will not
+   be able to edit it). Generating the secret with command substitution into a
+   single `printf` guarantees it stays on one line — never hand-write or paste the
+   secret across lines, which produces invalid YAML and crashes SearXNG on boot.
+
+       mkdir -p "$HOME/.config/searxng"
+       printf 'use_default_settings: true\nserver:\n  secret_key: "%s"\n  limiter: false\n  bind_address: "0.0.0.0"\n  port: 8080\nsearch:\n  formats:\n    - html\n    - json\n' "$(openssl rand -hex 32)" > "$HOME/.config/searxng/settings.yml"
+
+   This produces the following file. `formats` must include `json` or the API
+   returns an error, and `limiter: false` keeps automated localhost queries from
+   being blocked:
 
        use_default_settings: true
        server:
-         secret_key: "REPLACE_WITH_RANDOM_SECRET"
+         secret_key: "<64-hex-char secret on one line>"
          limiter: false
          bind_address: "0.0.0.0"
          port: 8080
@@ -36,6 +43,9 @@ continuing.
          formats:
            - html
            - json
+
+   Confirm the file is valid before continuing: `cat "$HOME/.config/searxng/settings.yml"`
+   — the `secret_key` line must be a single line ending in a closing `"`.
 
 3. **Start the container.** First check that port 8080 is free (e.g.
    `ss -ltn | grep :8080`); if it is taken, pick another port and use it
@@ -56,9 +66,12 @@ continuing.
    error, the `formats` setting did not take effect — recheck step 2 and restart
    the container with `docker restart searxng`.
 
-5. **Wire it into the agent.** Set the agent config value `searxng_url` to
-   `http://localhost:8080` (use whatever port you settled on). Tell the user
-   that the `web_search` tool reads this value at startup, so they must restart
-   odysseus-code for web search to become available.
+5. **Wire it into the agent.** Set the agent config value `searxng_url` by running
+   (use whatever port you settled on):
+
+       odysseus-code config set searxng_url http://localhost:8080
+
+   Then tell the user that the `web_search` tool reads this value at startup, so
+   they must restart odysseus-code for web search to become available.
 
 As you finish each step, call complete_skill_step so your progress is tracked.
