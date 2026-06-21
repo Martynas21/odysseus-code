@@ -36,7 +36,12 @@ impl Tool for WebSearch {
     fn safety(&self) -> Safety {
         Safety::ReadOnly
     }
-    async fn execute(&self, args: &Value, _cwd: &Path, _t: u64) -> Result<String, ToolError> {
+    async fn execute(
+        &self,
+        args: &Value,
+        _cwd: &Path,
+        timeout_secs: u64,
+    ) -> Result<String, ToolError> {
         let base = match self.endpoint.as_deref() {
             Some(u) if !u.is_empty() => u.trim_end_matches('/'),
             _ => {
@@ -52,7 +57,12 @@ impl Tool for WebSearch {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_COUNT) as usize;
 
-        let resp = reqwest::Client::new()
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .connect_timeout(std::time::Duration::from_secs(timeout_secs))
+            .build()
+            .map_err(|e| ToolError::Failed(format!("failed to build HTTP client: {e}")))?;
+        let resp = client
             .get(format!("{base}/search"))
             .query(&[("q", query), ("format", "json"), ("categories", "general")])
             .send()

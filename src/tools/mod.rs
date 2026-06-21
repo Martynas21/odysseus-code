@@ -274,6 +274,7 @@ mod tests {
         assert!(!names.iter().any(|n| n == "edit_file"));
         assert!(!names.iter().any(|n| n == "shell"));
         assert!(names.iter().any(|n| n == "ask_user"));
+        assert!(names.iter().any(|n| n == "web_search"));
     }
 
     #[test]
@@ -303,5 +304,9 @@ mod tests {
         // Spec mode also gets web_search (read-only).
         let spec = ToolRegistry::for_mode(Mode::Spec, None);
         assert!(spec.get("web_search").is_some());
+        assert_eq!(
+            spec.get("web_search").map(|t| t.safety()),
+            Some(Safety::ReadOnly)
+        );
     }
 }
