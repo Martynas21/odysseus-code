@@ -1,13 +1,4 @@
-mod actions;
-mod agent;
-mod cli;
-mod config;
-mod context;
-mod llm;
-mod mode;
-mod skills;
-mod tools;
-
+use odysseus_code::{actions, cli, mode};
 use anyhow::Result;
 use clap::Parser;
 
